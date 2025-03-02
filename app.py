@@ -182,10 +182,11 @@ def main():
     # Sidebar
     st.sidebar.title("Navigation")
     
-    # Only show Train Model option if running locally
-    available_pages = ["Dataset Info", "Test Model"]
+    # Show all pages when running locally, only Test Model when deployed
     if is_running_locally():
-        available_pages.insert(1, "Train Model")
+        available_pages = ["Dataset Info", "Train Model", "Test Model"]
+    else:
+        available_pages = ["Test Model"]
     
     page = st.sidebar.radio("Go to", available_pages)
 
