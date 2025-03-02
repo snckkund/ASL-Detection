@@ -40,6 +40,24 @@ jobs:
           # Add Hugging Face remote
           git remote add space https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
           
+          # Fetch from Hugging Face
+          git fetch space main
+          
+          # Create a temporary branch
+          git checkout -b temp_branch
+          
+          # Copy README and .gitattributes from HF
+          git checkout space/main -- README.md || true
+          git checkout space/main -- .gitattributes || true
+          
+          # Stage and commit
+          git add README.md .gitattributes || true
+          git commit -m "Preserve HF README and .gitattributes" || true
+          
           # Push to Hugging Face with LFS
-          git lfs push --all space main
-          git push space main --force 
+          git lfs push --all space temp_branch:main
+          git push space temp_branch:main --force
+          
+          # Cleanup
+          git checkout main
+          git branch -D temp_branch 
