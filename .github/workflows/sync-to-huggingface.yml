@@ -1,29 +1,37 @@
 name: Sync to Hugging Face Hub
-
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
-  sync-to-hub:
+  sync-to-hf:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 0
           lfs: true
-      
-      - name: Configure Git
-        run: |
-          git config --global user.email "your-email@example.com"
-          git config --global user.name "your-username"
-      
-      - name: Push to Hugging Face
+
+      - name: Push to HF
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # Configure Git LFS
           git lfs install
-          git remote add huggingface https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
-          git push huggingface main --force
+          git lfs track "*.h5"
+          
+          # Add Hugging Face remote
+          git remote add space https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
+          
+          # Create/update .gitattributes for LFS
+          echo "*.h5 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          
+          # Stage and commit any changes to .gitattributes
+          git add .gitattributes
+          git commit -m "Update .gitattributes" || echo "No changes to .gitattributes"
+          
+          # Push to Hugging Face
+          git push space main --force 
