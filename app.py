@@ -246,97 +246,69 @@ def run_camera_feed():
     if IS_HUGGINGFACE:
         st.write("## ASL Detection")
         
-        # Initialize state
-        if 'processing_active' not in st.session_state:
-            st.session_state.processing_active = False
-            
-        # Debug section
-        st.write("### Debug Information")
-        debug_info = st.empty()
-        debug_info.text("Waiting for camera input...")
-        
-        # Camera section
-        st.write("### Camera Feed")
+        # Camera input
         camera = st.camera_input("Enable camera")
         
         if camera is not None:
             try:
-                # Basic image processing
-                debug_text = []
-                debug_text.append("1. Got camera input")
-                
                 # Convert to numpy array
                 img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                debug_text.append(f"2. Image shape: {frame.shape}")
                 
                 # Convert to RGB
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                debug_text.append("3. Converted to RGB")
-                
-                # Initialize MediaPipe
-                mp_hands = mp.solutions.hands
-                mp_drawing = mp.solutions.drawing_utils
-                debug_text.append("4. Initialized MediaPipe")
                 
                 # Process with MediaPipe
-                with mp_hands.Hands(
+                with mp.solutions.hands.Hands(
                     static_image_mode=True,
                     max_num_hands=1,
                     min_detection_confidence=0.3
                 ) as hands:
+                    # Process the frame
                     results = hands.process(rgb_frame)
-                    debug_text.append("5. Processed with MediaPipe")
                     
-                    # Create output frame
+                    # Create a copy for drawing
                     output_frame = rgb_frame.copy()
                     
+                    # Draw hand landmarks if detected
                     if results.multi_hand_landmarks:
-                        debug_text.append(f"6. Found {len(results.multi_hand_landmarks)} hands")
+                        st.write(f"Detected {len(results.multi_hand_landmarks)} hand(s)")
                         
                         for hand_landmarks in results.multi_hand_landmarks:
-                            # Draw basic landmarks
-                            for idx, landmark in enumerate(hand_landmarks.landmark):
-                                h, w, _ = output_frame.shape
-                                cx, cy = int(landmark.x * w), int(landmark.y * h)
-                                cv2.circle(output_frame, (cx, cy), 8, (0, 0, 255), -1)  # Red dots
-                                
-                            # Draw connections
-                            mp_drawing.draw_landmarks(
+                            # Draw landmarks and connections
+                            mp.solutions.drawing_utils.draw_landmarks(
                                 output_frame,
                                 hand_landmarks,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=5),
-                                mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=3)
+                                mp.solutions.hands.HAND_CONNECTIONS,
+                                mp.solutions.drawing_utils.DrawingSpec(color=(255,0,0), thickness=5, circle_radius=8),
+                                mp.solutions.drawing_utils.DrawingSpec(color=(0,255,0), thickness=5)
                             )
-                            debug_text.append("7. Drew landmarks")
                             
-                            # Make prediction
+                            # Make prediction if model is loaded
                             if st.session_state.model:
                                 landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
                                 prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
                                 predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
                                 confidence = np.max(prediction)
                                 
-                                # Draw prediction
-                                text = f"{predicted_class} ({confidence:.2f})"
-                                cv2.putText(output_frame, text, (20, 40), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
-                                debug_text.append(f"8. Prediction: {text}")
+                                # Draw prediction text
+                                cv2.putText(
+                                    output_frame,
+                                    f"{predicted_class} ({confidence:.2f})",
+                                    (20, 40),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    1,
+                                    (255, 255, 255),
+                                    3
+                                )
                     else:
-                        debug_text.append("6. No hands detected")
+                        st.write("No hands detected")
                     
-                    # Update debug info
-                    debug_info.text("\n".join(debug_text))
-                    
-                    # Show processed frame
+                    # Display the processed frame
                     st.image(output_frame, channels="RGB", caption="Processed Feed")
-                    
+            
             except Exception as e:
-                st.error("Error in processing:")
-                st.error(str(e))
-                import traceback
-                st.error(traceback.format_exc())
+                st.error(f"Error: {str(e)}")
     else:
         FRAME_WINDOW = st.empty()
         while True:
