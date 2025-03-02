@@ -549,13 +549,13 @@ def test_page():
                         if st.session_state.cap is not None:
                             st.session_state['camera_active'] = True
                             st.success("Camera initialized successfully!")
-                    st.experimental_rerun()
+                    st.rerun()
 
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
                     cleanup()
-                    st.experimental_rerun()
+                    st.rerun()
 
         # Run camera feed if active
         if st.session_state.get('camera_active', False):
