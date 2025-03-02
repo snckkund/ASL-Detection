@@ -9,6 +9,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import mediapipe as mp
 
+# Set page config at the very start
+st.set_page_config(page_title="ASL Detection System", layout="wide")
+
 from src.model import create_landmark_model, load_trained_model, ASLEnsemble
 from src.data_utils import (
     create_dataset, process_uploaded_image, get_dataset_stats,
@@ -356,7 +359,6 @@ def get_button_style(active):
     """
 
 def main():
-    st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
     
     if 'current_mode' not in st.session_state:
@@ -562,16 +564,16 @@ def test_page():
         show_reference_chart()
 
     # Mode selection with toggle buttons
-    col1, col2 = st.columns(2)
+    mode_col1, mode_col2 = st.columns(2)
     
-    with col1:
+    with mode_col1:
         st.markdown(get_button_style(st.session_state.get('mode') == 'camera'), unsafe_allow_html=True)
         if st.button("📷 Camera Mode", key="camera_mode"):
             st.session_state.mode = 'camera'
             cleanup()
             st.rerun()
     
-    with col2:
+    with mode_col2:
         st.markdown(get_button_style(st.session_state.get('mode') == 'upload'), unsafe_allow_html=True)
         if st.button("📤 Upload Mode", key="upload_mode"):
             st.session_state.mode = 'upload'
@@ -588,96 +590,110 @@ def test_page():
         with control_col1:
             if not st.session_state.get('camera_active', False):
                 if st.button("📷 Start Camera", key="start_camera"):
-                    if IS_HUGGINGFACE:
-                        st.session_state['camera_active'] = True
-                        st.success("Camera initialized. Please allow camera access when prompted.")
-                    else:
-                        # Local environment - use OpenCV
-                        if 'cap' in st.session_state and st.session_state.cap is not None:
-                            st.session_state.cap.release()
-                        
-                        st.session_state.cap = initialize_camera()
-                        if st.session_state.cap is not None:
-                            st.session_state['camera_active'] = True
-                            st.success("Camera initialized successfully!")
+                    st.session_state['camera_active'] = True
                     st.rerun()
 
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
+                    st.session_state['camera_active'] = False
                     cleanup()
                     st.rerun()
 
         # Run camera feed if active
         if st.session_state.get('camera_active', False):
-            run_camera_feed()
+            camera_col1, camera_col2 = st.columns([2, 1])
+            with camera_col1:
+                # Camera feed
+                camera_image = st.camera_input("Camera Feed", key="camera")
+                
+                if camera_image is not None:
+                    # Convert the image to numpy array
+                    image = Image.open(camera_image)
+                    frame = np.array(image)
+                    
+                    # Process frame with MediaPipe
+                    try:
+                        # Convert BGR to RGB
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        results = st.session_state.hand_tracker.process(frame_rgb)
+                        
+                        if results.multi_hand_landmarks:
+                            for hand_landmarks in results.multi_hand_landmarks:
+                                # Draw landmarks
+                                mp_drawing.draw_landmarks(
+                                    frame_rgb,
+                                    hand_landmarks,
+                                    mp_hands.HAND_CONNECTIONS,
+                                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                                    mp_drawing_styles.get_default_hand_connections_style()
+                                )
+                                
+                                # Get predictions
+                                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                                confidence = np.max(prediction[0])
+                                
+                                with camera_col2:
+                                    st.markdown("### Prediction")
+                                    st.markdown(f"**Letter:** {predicted_class}")
+                                    st.markdown(f"**Confidence:** {confidence:.1%}")
+                        
+                            # Display processed frame with landmarks
+                            st.image(frame_rgb, channels="RGB", use_container_width=True)
+                        
+                    except Exception as e:
+                        st.error(f"Error processing frame: {str(e)}")
 
     # Upload Mode
     else:
-        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-        if uploaded_file is not None:
-            try:
-                # Load and process image
-                image = Image.open(uploaded_file)
-                image_np = np.array(image)
-                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-                
-                # Create a hand tracker specifically for static images
-                image_hand_tracker = mp_hands.Hands(
-                    static_image_mode=True,
-                    max_num_hands=1,
-                    min_detection_confidence=0.2,  # Lower threshold for images
-                    model_complexity=1
-                )
-                
-                # Process with MediaPipe
-                results = image_hand_tracker.process(image_rgb)
-                
-                if results.multi_hand_landmarks:
-                    # Create a copy for drawing
-                    image_with_landmarks = image_rgb.copy()
-                    
-                    for hand_landmarks in results.multi_hand_landmarks:
-                        # Draw landmarks
-                        mp_drawing.draw_landmarks(
-                            image_with_landmarks,
-                            hand_landmarks,
-                            mp_hands.HAND_CONNECTIONS,
-                            mp_drawing_styles.get_default_hand_landmarks_style(),
-                            mp_drawing_styles.get_default_hand_connections_style()
-                        )
-                        
-                        # Extract landmarks and predict
-                        landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                        prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                        predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                        confidence = np.max(prediction[0])
-
-                        # Show both original and processed images
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.image(image_rgb, caption="Original Image", use_column_width=True)
-                        with col2:
-                            st.image(image_with_landmarks, caption="Detected Hand Landmarks", use_column_width=True)
-                        with col3:
-                            st.markdown(f"""
-                                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
-                                    <h2 style='color: #00acee;'>Prediction Results</h2>
-                                    <p style='font-size: 24px;'>Sign: {predicted_class}</p>
-                                    <p style='font-size: 18px;'>Confidence: {confidence:.2%}</p>
-                                </div>
-                            """, unsafe_allow_html=True)
-                else:
-                    st.image(image_rgb, caption="Original Image", use_column_width=True)
-                    st.error("No hand detected in the image. Please ensure the hand is clearly visible.")
-                
-                # Clean up the image hand tracker
-                image_hand_tracker.close()
+        upload_col1, upload_col2 = st.columns([2, 1])
+        
+        with upload_col1:
+            uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
             
-            except Exception as e:
-                st.error(f"Error processing image: {str(e)}")
-                st.write("Error details:", str(e))
-
+            if uploaded_file is not None:
+                try:
+                    # Read and process image
+                    image = Image.open(uploaded_file)
+                    frame = np.array(image)
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Process with MediaPipe
+                    results = st.session_state.hand_tracker.process(frame_rgb)
+                    
+                    if results.multi_hand_landmarks:
+                        for hand_landmarks in results.multi_hand_landmarks:
+                            # Draw landmarks
+                            mp_drawing.draw_landmarks(
+                                frame_rgb,
+                                hand_landmarks,
+                                mp_hands.HAND_CONNECTIONS,
+                                mp_drawing_styles.get_default_hand_landmarks_style(),
+                                mp_drawing_styles.get_default_hand_connections_style()
+                            )
+                            
+                            # Get predictions
+                            landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                            prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                            predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                            confidence = np.max(prediction[0])
+                            
+                            with upload_col2:
+                                st.markdown("### Prediction")
+                                st.markdown(f"**Letter:** {predicted_class}")
+                                st.markdown(f"**Confidence:** {confidence:.1%}")
+                        
+                        # Display processed image
+                        st.image(frame_rgb, channels="RGB", use_container_width=True)
+                    else:
+                        st.warning("No hand detected in the image. Please try another image.")
+                        st.image(frame_rgb, channels="RGB", use_container_width=True)
+                        
+                except Exception as e:
+                    st.error(f"Error processing image: {str(e)}")
+                    
 if __name__ == "__main__":
     try:
         main()
