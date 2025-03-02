@@ -262,8 +262,7 @@ def run_camera_feed():
                         
                         // Connect stream directly to video element
                         video.srcObject = stream;
-                        video.play().catch(console.error);
-                        
+                        video.play();
                     } catch (err) {
                         console.error('Camera error:', err);
                         document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
@@ -273,8 +272,7 @@ def run_camera_feed():
                 // Start camera when component loads
                 startCamera();
             </script>
-        """, height=500)  # Increased height to ensure video is visible
-        
+        """, height=500)  
     else:
         FRAME_WINDOW = st.empty()
         while True:
