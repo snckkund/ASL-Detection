@@ -406,7 +406,7 @@ def run_camera_feed():
         if st.session_state.get('component_value'):
             try:
                 landmarks_data = st.session_state.component_value['data']
-                landmarks = np.array([l['x'], l['y'], l['z'] for l in landmarks_data]).flatten()
+                landmarks = np.array(([l['x'], l['y'], l['z']] for l in landmarks_data)).flatten()
                 prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                 predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
                 confidence = np.max(prediction[0])
