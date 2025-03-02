@@ -246,69 +246,149 @@ def run_camera_feed():
     if IS_HUGGINGFACE:
         st.write("## ASL Detection")
         
-        # Camera input
-        camera = st.camera_input("Enable camera")
+        # Initialize MediaPipe
+        mp_hands = mp.solutions.hands
+        mp_drawing = mp.solutions.drawing_utils
         
-        if camera is not None:
-            try:
-                # Convert to numpy array
-                img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
-                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                
-                # Convert to RGB
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Process with MediaPipe
-                with mp.solutions.hands.Hands(
-                    static_image_mode=True,
-                    max_num_hands=1,
-                    min_detection_confidence=0.3
-                ) as hands:
-                    # Process the frame
-                    results = hands.process(rgb_frame)
-                    
-                    # Create a copy for drawing
-                    output_frame = rgb_frame.copy()
-                    
-                    # Draw hand landmarks if detected
-                    if results.multi_hand_landmarks:
-                        st.write(f"Detected {len(results.multi_hand_landmarks)} hand(s)")
-                        
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            # Draw landmarks and connections
-                            mp.solutions.drawing_utils.draw_landmarks(
-                                output_frame,
-                                hand_landmarks,
-                                mp.solutions.hands.HAND_CONNECTIONS,
-                                mp.solutions.drawing_utils.DrawingSpec(color=(255,0,0), thickness=5, circle_radius=8),
-                                mp.solutions.drawing_utils.DrawingSpec(color=(0,255,0), thickness=5)
-                            )
-                            
-                            # Make prediction if model is loaded
-                            if st.session_state.model:
-                                landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
-                                prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
-                                confidence = np.max(prediction)
-                                
-                                # Draw prediction text
-                                cv2.putText(
-                                    output_frame,
-                                    f"{predicted_class} ({confidence:.2f})",
-                                    (20, 40),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1,
-                                    (255, 255, 255),
-                                    3
-                                )
-                    else:
-                        st.write("No hands detected")
-                    
-                    # Display the processed frame
-                    st.image(output_frame, channels="RGB", caption="Processed Feed")
+        # Create a placeholder for the video feed
+        video_placeholder = st.empty()
+        
+        # Initialize hand detection
+        hands = mp_hands.Hands(
+            static_image_mode=False,  # Set to False for video
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.3
+        )
+        
+        # Create HTML component for video streaming
+        video_html = st.components.v1.html(
+            """
+            <div style="position: relative;">
+                <video id="video" autoplay playsinline style="width: 640px; height: 480px;"></video>
+                <canvas id="output" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
+            </div>
             
+            <script>
+                const video = document.getElementById('video');
+                const canvas = document.getElementById('output');
+                const ctx = canvas.getContext('2d');
+                
+                // Set canvas size
+                canvas.width = 640;
+                canvas.height = 480;
+                
+                async function setupCamera() {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            'video': {
+                                width: 640,
+                                height: 480,
+                                frameRate: { ideal: 30 }
+                            }
+                        });
+                        video.srcObject = stream;
+                        
+                        return new Promise((resolve) => {
+                            video.onloadedmetadata = () => {
+                                video.play();
+                                resolve(video);
+                            };
+                        });
+                    } catch (error) {
+                        console.error('Error accessing camera:', error);
+                    }
+                }
+                
+                function sendFrame() {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        // Draw video frame to canvas
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        
+                        // Send frame data to Python
+                        const imageData = canvas.toDataURL('image/jpeg', 0.7);
+                        window.streamlit.setComponentValue({
+                            type: 'video_frame',
+                            data: imageData
+                        });
+                    }
+                    
+                    // Schedule next frame
+                    setTimeout(sendFrame, 33); // ~30fps
+                }
+                
+                // Start camera and frame sending
+                setupCamera().then(() => {
+                    sendFrame();
+                });
+            </script>
+            """,
+            height=500
+        )
+        
+        # Process frames
+        while True:
+            try:
+                # Get frame data from JavaScript
+                frame_data = st.session_state.get('video_frame')
+                if frame_data and isinstance(frame_data, dict) and 'data' in frame_data:
+                    # Convert base64 image to numpy array
+                    img_str = frame_data['data'].split(',')[1]
+                    img_bytes = base64.b64decode(img_str)
+                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    
+                    if frame is not None:
+                        # Convert to RGB for MediaPipe
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        
+                        # Process with MediaPipe
+                        results = hands.process(rgb_frame)
+                        
+                        # Draw hand landmarks
+                        if results.multi_hand_landmarks:
+                            for hand_landmarks in results.multi_hand_landmarks:
+                                # Draw landmarks
+                                mp_drawing.draw_landmarks(
+                                    rgb_frame,
+                                    hand_landmarks,
+                                    mp_hands.HAND_CONNECTIONS,
+                                    mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=5, circle_radius=8),
+                                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=5)
+                                )
+                                
+                                # Make prediction if model is loaded
+                                if st.session_state.model:
+                                    landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+                                    prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
+                                    predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
+                                    confidence = np.max(prediction)
+                                    
+                                    # Draw prediction
+                                    cv2.putText(
+                                        rgb_frame,
+                                        f"{predicted_class} ({confidence:.2f})",
+                                        (20, 40),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        1,
+                                        (255, 255, 255),
+                                        3
+                                    )
+                        
+                        # Update the video feed
+                        with video_placeholder:
+                            st.image(rgb_frame, channels="RGB", use_container_width=True)
+                
+                # Small delay to prevent overwhelming the browser
+                time.sleep(0.033)  # ~30fps
+                
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+                time.sleep(0.1)
+                continue
+                
+        # Cleanup
+        hands.close()
     else:
         FRAME_WINDOW = st.empty()
         while True:
