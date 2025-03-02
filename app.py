@@ -20,22 +20,31 @@ from src.config import (
 )
 from src.hand_tracking import HandTracker
 
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+# Detect environment
+IS_HUGGINGFACE = "SPACE_ID" in os.environ
+IS_LOCAL = not IS_HUGGINGFACE
 
-# Initialize MediaPipe components
-hand_tracker = HandTracker(confidence_threshold=0.7)
+# Only initialize MediaPipe if running locally
+if IS_LOCAL:
+    mp_hands = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+    hand_tracker = HandTracker(confidence_threshold=0.7)
 
 def init_session_state():
     if 'mode' not in st.session_state:
-        st.session_state.mode = 'camera'
+        st.session_state.mode = 'upload' if IS_HUGGINGFACE else 'camera'
     if 'camera_active' not in st.session_state:
         st.session_state.camera_active = False
     if 'model' not in st.session_state:
         if os.path.exists(MODEL_PATH):
+            # Configure TensorFlow for the environment
+            if IS_HUGGINGFACE:
+                # Disable GPU warnings and force CPU
+                os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+                tf.config.set_visible_devices([], 'GPU')
             st.session_state.model = load_trained_model(MODEL_PATH)
-    if 'hand_tracker' not in st.session_state:
+    if 'hand_tracker' not in st.session_state and IS_LOCAL:
         st.session_state.hand_tracker = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -44,7 +53,8 @@ def init_session_state():
         )
 
 def check_camera_permission():
-    # Try to access the camera
+    if IS_HUGGINGFACE:
+        return False
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Camera access denied. Please allow camera access to use this feature.")
@@ -53,6 +63,8 @@ def check_camera_permission():
     return True
 
 def request_camera_access():
+    if IS_HUGGINGFACE:
+        return
     st.components.v1.html("""
         <div id="camera_permission">Requesting camera access...</div>
         <script>
@@ -160,14 +172,7 @@ def show_reference_chart():
                 st.image(img, use_container_width=True)
 
 def is_running_locally():
-    """Check if the app is running locally"""
-    try:
-        # Check for HuggingFace Space environment
-        if "SPACE_ID" in os.environ:
-            return False
-        return True
-    except:
-        return True
+    return IS_LOCAL
 
 def stop_camera():
     if 'cap' in st.session_state:
@@ -183,7 +188,7 @@ def main():
     init_session_state()
     
     if 'current_mode' not in st.session_state:
-        st.session_state.current_mode = "Camera"
+        st.session_state.current_mode = "Upload" if IS_HUGGINGFACE else "Camera"
 
     if 'camera_index' not in st.session_state:
         st.session_state.camera_index = 0
@@ -191,17 +196,18 @@ def main():
     # Sidebar
     st.sidebar.title("Navigation")
     
-    # Show all pages when running locally, only Test Model when deployed
-    if is_running_locally():
+    # Show appropriate pages based on environment
+    if IS_LOCAL:
         available_pages = ["Dataset Info", "Train Model", "Test Model"]
     else:
         available_pages = ["Test Model"]
+        st.sidebar.info("⚡ Running on Hugging Face - Camera features disabled")
     
     page = st.sidebar.radio("Go to", available_pages)
 
     if page == "Dataset Info":
         dataset_info_page()
-    elif page == "Train Model" and is_running_locally():
+    elif page == "Train Model" and IS_LOCAL:
         train_page()
     else:
         test_page()
@@ -425,6 +431,10 @@ def test_page():
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
+        if IS_HUGGINGFACE:
+            st.error("Camera features are disabled in Hugging Face environment.")
+            return
+        
         # Camera controls
         control_col1, control_col2 = st.columns(2)
         FRAME_WINDOW = st.empty()
