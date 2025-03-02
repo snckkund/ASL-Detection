@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import os
 import time
-import base64
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -244,134 +243,206 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        st.write("## ASL Detection")
-        
-        # Camera input
-        camera = st.camera_input("Enable camera")
-        
-        if camera is not None:
-            try:
-                # Convert to numpy array
-                img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
-                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        # For browser environment, use JavaScript with MediaPipe
+        st.components.v1.html("""
+            <div style="position: relative; width: 640px; height: 480px;">
+                <video id="camera" autoplay playsinline style="position: absolute; visibility: hidden;"></video>
+                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0;"></canvas>
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1620248257/camera_utils.js"></script>
+            <script>
+                const videoElement = document.getElementById('camera');
+                const canvasElement = document.getElementById('output_canvas');
+                const canvasCtx = canvasElement.getContext('2d');
+                let currentPrediction = null;
+
+                // Set initial dimensions
+                canvasElement.width = 640;
+                canvasElement.height = 480;
+                videoElement.width = 640;
+                videoElement.height = 480;
+
+                // Define colors for different fingers
+                const fingerColors = {
+                    thumb: '#FF0000',      // Red
+                    index: '#00FF00',      // Green
+                    middle: '#0000FF',     // Blue
+                    ring: '#FFFF00',       // Yellow
+                    pinky: '#FF00FF'       // Magenta
+                };
+
+                // Define landmark indices for each finger
+                const fingerLandmarks = {
+                    thumb: [1, 2, 3, 4],
+                    index: [5, 6, 7, 8],
+                    middle: [9, 10, 11, 12],
+                    ring: [13, 14, 15, 16],
+                    pinky: [17, 18, 19, 20]
+                };
                 
-                # Debug image shape and content
-                st.write(f"Frame shape: {frame.shape}")
-                st.write(f"Frame dtype: {frame.dtype}")
-                st.write(f"Frame min/max values: {frame.min()}, {frame.max()}")
-                
-                # Ensure correct image format and size
-                if frame.shape[0] > 1000:  # If image is too large
-                    scale = 1000 / frame.shape[0]
-                    frame = cv2.resize(frame, None, fx=scale, fy=scale)
-                
-                # Convert to RGB (MediaPipe requires RGB)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Initialize MediaPipe Hands with specific configurations for Hugging Face
-                hands = mp.solutions.hands.Hands(
-                    static_image_mode=True,
-                    max_num_hands=2,  # Allow detection of multiple hands
-                    model_complexity=0,  # Use simpler model for better performance
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5
-                )
-                
-                # Process the frame
-                results = hands.process(rgb_frame)
-                
-                # Create output frame
-                output_frame = rgb_frame.copy()
-                
-                # Draw hand landmarks if detected
-                if results.multi_hand_landmarks:
-                    st.write(f"Number of hands detected: {len(results.multi_hand_landmarks)}")
+                function onResults(results) {
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
                     
-                    for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-                        # Get handedness (left or right hand)
-                        handedness = results.multi_handedness[idx].classification[0].label
-                        st.write(f"Hand {idx+1}: {handedness}")
-                        
-                        # Draw skeleton
-                        mp.solutions.drawing_utils.draw_landmarks(
-                            output_frame,
-                            hand_landmarks,
-                            mp.solutions.hands.HAND_CONNECTIONS,
-                            mp.solutions.drawing_utils.DrawingSpec(
-                                color=(255, 0, 0),  # Red color for landmarks
-                                thickness=8,
-                                circle_radius=8
-                            ),
-                            mp.solutions.drawing_utils.DrawingSpec(
-                                color=(0, 255, 0),  # Green color for connections
-                                thickness=5
-                            )
-                        )
-                        
-                        # Draw additional markers for better visibility
-                        h, w, _ = output_frame.shape
-                        for lm_id, landmark in enumerate(hand_landmarks.landmark):
-                            # Convert normalized coordinates to pixel coordinates
-                            x = int(landmark.x * w)
-                            y = int(landmark.y * h)
+                    if (results.multiHandLandmarks) {
+                        for (const landmarks of results.multiHandLandmarks) {
+                            // Draw connections
+                            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
+                                        {color: '#FFFFFF', lineWidth: 2});
                             
-                            # Draw large filled circle
-                            cv2.circle(
-                                output_frame,
-                                (x, y),
-                                12,  # Larger radius
-                                (0, 0, 255),  # Blue color
-                                -1  # Filled circle
-                            )
+                            // Draw landmarks with different colors for each finger
+                            for (const [finger, indices] of Object.entries(fingerLandmarks)) {
+                                const color = fingerColors[finger];
+                                indices.forEach(index => {
+                                    drawLandmarks(canvasCtx, [landmarks[index]], {
+                                        color: color,
+                                        fillColor: color,
+                                        lineWidth: 1,
+                                        radius: 3
+                                    });
+                                });
+                            }
                             
-                            # Draw landmark ID for debugging
-                            cv2.putText(
-                                output_frame,
-                                str(lm_id),
-                                (x+10, y+10),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (255, 255, 255),
-                                2
-                            )
+                            // Draw prediction near hand if available
+                            if (currentPrediction) {
+                                const {label, confidence} = currentPrediction;
+                                
+                                // Find top-left corner of hand bounding box
+                                let minX = Infinity;
+                                let minY = Infinity;
+                                landmarks.forEach(landmark => {
+                                    minX = Math.min(minX, landmark.x * canvasElement.width);
+                                    minY = Math.min(minY, landmark.y * canvasElement.height);
+                                });
+                                
+                                // Draw prediction text with background
+                                const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                                const padding = 8;
+                                const fontSize = 20;
+                                canvasCtx.font = `${fontSize}px Arial`;
+                                const textMetrics = canvasCtx.measureText(text);
+                                
+                                // Draw background rectangle
+                                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                canvasCtx.fillRect(
+                                    minX - padding,
+                                    minY - fontSize - padding * 2,
+                                    textMetrics.width + padding * 2,
+                                    fontSize + padding * 2
+                                );
+                                
+                                // Draw text
+                                canvasCtx.fillStyle = 'white';
+                                canvasCtx.fillText(text, minX, minY - padding);
+                            }
+                            
+                            // Send landmarks to Python for prediction
+                            window.parent.postMessage({
+                                type: 'hand_landmarks',
+                                landmarks: landmarks
+                            }, '*');
+                        }
+                    }
+                    canvasCtx.restore();
+                }
+                
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
+                }});
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onResults);
+                
+                async function startCamera() {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: 640,
+                                height: 480,
+                                frameRate: 30
+                            }
+                        });
                         
-                        # Make prediction if model is loaded
-                        if st.session_state.model:
-                            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
-                            prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
-                            predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
-                            confidence = np.max(prediction)
-                            
-                            # Draw prediction with high visibility
-                            cv2.putText(
-                                output_frame,
-                                f"{predicted_class} ({confidence:.2f})",
-                                (20, 70),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                2.0,
-                                (255, 255, 255),
-                                4
-                            )
-                else:
-                    st.write("No hands detected in the frame")
+                        videoElement.srcObject = stream;
+                        await videoElement.play();
+                        
+                        // Start continuous frame processing
+                        function processFrame() {
+                            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                                hands.send({image: videoElement});
+                            }
+                            requestAnimationFrame(processFrame);
+                        }
+                        processFrame();
+                        
+                    } catch (err) {
+                        console.error('Camera error:', err);
+                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
+                    }
+                }
                 
-                # Display both original and processed frames for comparison
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("Original Frame")
-                    st.image(rgb_frame, channels="RGB", use_container_width=True)
-                with col2:
-                    st.write("Processed Frame (with landmarks)")
-                    st.image(output_frame, channels="RGB", use_container_width=True)
+                // Function to update prediction display
+                window.updatePrediction = function(label, confidence) {
+                    currentPrediction = { label, confidence };
+                };
                 
-                # Cleanup
-                hands.close()
+                startCamera();
+            </script>
+        """, height=500)
+        
+        # Handle landmark data from JavaScript and make predictions
+        st.components.v1.html(
+            """
+            <script>
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'hand_landmarks') {
+                        const landmarks = event.data.landmarks;
+                        window.streamlit.setComponentValue({
+                            type: 'landmarks',
+                            data: landmarks
+                        });
+                    }
+                });
+            </script>
+            """,
+            height=0
+        )
+        
+        # Process landmarks and update predictions
+        if st.session_state.get('component_value'):
+            try:
+                landmarks_data = st.session_state.component_value['data']
+                # Create flattened array of landmarks
+                landmarks_flat = []
+                for l in landmarks_data:
+                    landmarks_flat.extend([l['x'], l['y'], l['z']])
+                landmarks = np.array(landmarks_flat)
                 
+                # Make prediction
+                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                confidence = float(np.max(prediction[0]))
+                
+                # Send prediction back to JavaScript
+                st.components.v1.html(
+                    f"""
+                    <script>
+                        window.updatePrediction('{predicted_class}', {confidence});
+                    </script>
+                    """,
+                    height=0
+                )
             except Exception as e:
-                st.error("Error in hand tracking:")
-                st.error(str(e))
-                import traceback
-                st.error(traceback.format_exc())
+                print(f"Prediction error: {str(e)}")
     else:
         FRAME_WINDOW = st.empty()
         while True:
@@ -409,7 +480,7 @@ def run_camera_feed():
                         coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
                         x_min = max(0, min(x for x, y in coords) - 20)
                         y_min = max(0, min(y for x, y in coords) - 20)
-                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.4f})",
+                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
                                   (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
                                   0.9, (0, 255, 0), 2)
 
