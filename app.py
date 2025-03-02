@@ -309,14 +309,16 @@ def run_camera_feed():
                         await videoElement.play();
                         
                         // Start hand detection
-                        const camera = new Camera(videoElement, {
-                            onFrame: async () => {
-                                await hands.send({image: videoElement});
-                            },
-                            width: 640,
-                            height: 480
-                        });
-                        camera.start();
+                        await hands.send({image: videoElement});
+                        
+                        // Start continuous frame processing
+                        function processFrame() {
+                            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                                hands.send({image: videoElement});
+                            }
+                            requestAnimationFrame(processFrame);
+                        }
+                        processFrame();
                         
                     } catch (err) {
                         console.error('Camera error:', err);
@@ -333,7 +335,7 @@ def run_camera_feed():
             st.session_state.prediction_display = st.empty()
             
         # Handle landmark data from JavaScript
-        components.html(
+        st.components.v1.html(
             """
             <script>
                 window.addEventListener('message', function(event) {
