@@ -248,18 +248,25 @@ def run_camera_feed():
             <div style="position: relative; width: 640px; height: 480px;">
                 <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
                 <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
+                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); padding: 5px;"></div>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
+                const debugElement = document.getElementById('debug');
                 const canvasCtx = canvasElement.getContext('2d');
                 let currentPrediction = null;
 
                 // Set initial dimensions
                 canvasElement.width = 640;
                 canvasElement.height = 480;
+
+                function showDebug(text) {
+                    debugElement.textContent = text;
+                    console.log(text);
+                }
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -283,6 +290,7 @@ def run_camera_feed():
                     if (!currentPrediction) return;
                     
                     const {label, confidence} = currentPrediction;
+                    showDebug(`Current prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
                     
                     // Find top-left corner of hand bounding box
                     let minX = Infinity;
@@ -314,12 +322,15 @@ def run_camera_feed():
                 }
                 
                 function onResults(results) {
-                    canvasCtx.save();
-                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-                    
-                    if (results.multiHandLandmarks) {
-                        for (const landmarks of results.multiHandLandmarks) {
+                    try {
+                        canvasCtx.save();
+                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                        
+                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                            showDebug('Hand detected');
+                            const landmarks = results.multiHandLandmarks[0];
+                            
                             // Draw connections
                             drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
                                         {color: '#FFFFFF', lineWidth: 2});
@@ -345,9 +356,13 @@ def run_camera_feed():
                                 type: 'hand_landmarks',
                                 landmarks: landmarks
                             }, '*');
+                        } else {
+                            showDebug('No hand detected');
                         }
+                        canvasCtx.restore();
+                    } catch (error) {
+                        showDebug('Error in onResults: ' + error.message);
                     }
-                    canvasCtx.restore();
                 }
                 
                 const hands = new Hands({locateFile: (file) => {
@@ -365,6 +380,7 @@ def run_camera_feed():
                 
                 async function startCamera() {
                     try {
+                        showDebug('Initializing camera...');
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
                                 facingMode: "user",
@@ -374,29 +390,41 @@ def run_camera_feed():
                         });
                         
                         videoElement.srcObject = stream;
-                        await videoElement.play();
+                        showDebug('Camera initialized, waiting for video to play...');
                         
-                        // Start continuous frame processing
-                        function processFrame() {
-                            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                                hands.send({image: videoElement});
-                            }
-                            requestAnimationFrame(processFrame);
-                        }
-                        processFrame();
+                        videoElement.onloadedmetadata = () => {
+                            showDebug('Video metadata loaded');
+                            videoElement.play().then(() => {
+                                showDebug('Video playing, starting hand detection...');
+                                // Start continuous frame processing
+                                function processFrame() {
+                                    try {
+                                        if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                                            hands.send({image: videoElement});
+                                        }
+                                        requestAnimationFrame(processFrame);
+                                    } catch (error) {
+                                        showDebug('Error in processFrame: ' + error.message);
+                                    }
+                                }
+                                processFrame();
+                            }).catch(error => {
+                                showDebug('Error playing video: ' + error.message);
+                            });
+                        };
                         
                     } catch (err) {
-                        console.error('Camera error:', err);
-                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
+                        showDebug('Camera error: ' + err.message);
                     }
                 }
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
-                    console.log('Updating prediction:', label, confidence);
+                    showDebug(`Received prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
                     currentPrediction = { label, confidence };
                 };
                 
+                showDebug('Starting camera...');
                 startCamera();
             </script>
         """, height=500)
@@ -438,7 +466,6 @@ def run_camera_feed():
                 st.components.v1.html(
                     f"""
                     <script>
-                        console.log('Sending prediction to JS:', '{predicted_class}', {confidence});
                         window.parent.updatePrediction('{predicted_class}', {confidence});
                     </script>
                     """,
