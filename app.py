@@ -48,7 +48,7 @@ def load_cached_model():
 
 def init_session_state():
     if 'mode' not in st.session_state:
-        st.session_state.mode = 'camera'  # Default to camera mode for all environments
+        st.session_state.mode = 'camera'  # Default to camera for all environments
     if 'camera_active' not in st.session_state:
         st.session_state.camera_active = False
     if 'model' not in st.session_state:
@@ -248,17 +248,6 @@ def run_camera_feed():
             <div>
                 <video id="camera" autoplay playsinline style="display: none;"></video>
                 <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
-                <div id="prediction" style="
-                    position: absolute;
-                    top: 10px;
-                    left: 10px;
-                    background: rgba(0,0,0,0.7);
-                    color: white;
-                    padding: 8px 12px;
-                    border-radius: 4px;
-                    font-size: 16px;
-                    font-weight: bold;
-                "></div>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -266,8 +255,8 @@ def run_camera_feed():
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
-                const predictionElement = document.getElementById('prediction');
                 const canvasCtx = canvasElement.getContext('2d');
+                let currentPrediction = null;
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -313,6 +302,38 @@ def run_camera_feed():
                                         radius: 5
                                     });
                                 });
+                            }
+                            
+                            // Draw prediction if available
+                            if (currentPrediction) {
+                                const {label, confidence} = currentPrediction;
+                                
+                                // Calculate position near the hand
+                                let minX = Infinity;
+                                let minY = Infinity;
+                                landmarks.forEach(landmark => {
+                                    minX = Math.min(minX, landmark.x * canvasElement.width);
+                                    minY = Math.min(minY, landmark.y * canvasElement.height);
+                                });
+                                
+                                // Draw background box
+                                const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                                const padding = 10;
+                                const fontSize = 24;
+                                canvasCtx.font = `${fontSize}px Arial`;
+                                const textMetrics = canvasCtx.measureText(text);
+                                
+                                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                                canvasCtx.fillRect(
+                                    minX - padding,
+                                    minY - fontSize - padding * 2,
+                                    textMetrics.width + padding * 2,
+                                    fontSize + padding * 2
+                                );
+                                
+                                // Draw text
+                                canvasCtx.fillStyle = 'white';
+                                canvasCtx.fillText(text, minX, minY - padding);
                             }
                             
                             // Send landmarks to Python for prediction
@@ -371,11 +392,7 @@ def run_camera_feed():
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
-                    predictionElement.textContent = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                    // Draw prediction on canvas
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.font = '24px Arial';
-                    canvasCtx.fillText(`${label} (${(confidence * 100).toFixed(1)}%)`, 10, 30);
+                    currentPrediction = { label, confidence };
                 };
                 
                 startCamera();
@@ -402,15 +419,14 @@ def run_camera_feed():
                 });
             </script>
             """,
-            height=0,
-            key='landmark_handler'
+            height=0
         )
         
         # Process landmarks and update predictions
         if st.session_state.get('component_value'):
             try:
                 landmarks_data = st.session_state.component_value['data']
-                landmarks = np.array(([l['x'], l['y'], l['z']] for l in landmarks_data)).flatten()
+                landmarks = np.array([[l['x'], l['y'], l['z']] for l in landmarks_data]).flatten()
                 prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                 predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
                 confidence = np.max(prediction[0])
@@ -422,8 +438,7 @@ def run_camera_feed():
                         window.updatePrediction('{predicted_class}', {confidence});
                     </script>
                     """,
-                    height=0,
-                    key='prediction_updater'
+                    height=0
                 )
             except Exception as e:
                 st.error(f"Prediction error: {str(e)}")
