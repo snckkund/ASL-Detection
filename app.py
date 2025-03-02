@@ -239,6 +239,101 @@ def stop_camera():
         st.session_state['camera_active'] = False
         st.success('Camera stopped.')
 
+def run_camera_feed():
+    """Run the camera feed continuously"""
+    if IS_HUGGINGFACE:
+        # For browser environment, use JavaScript to capture frames
+        st.components.v1.html("""
+            <div style="display: none;">
+                <video id="camera" autoplay playsinline></video>
+                <canvas id="canvas"></canvas>
+            </div>
+            <img id="camera_frame" style="width: 100%; max-width: 640px; height: auto;" />
+            <script>
+                let video = document.getElementById('camera');
+                let canvas = document.getElementById('canvas');
+                let context = canvas.getContext('2d');
+                let frameElement = document.getElementById('camera_frame');
+                
+                async function startCamera() {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: 640,
+                                height: 480,
+                                frameRate: 30
+                            }
+                        });
+                        video.srcObject = stream;
+                        await video.play();
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        
+                        // Continuously capture frames
+                        function captureFrame() {
+                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                frameElement.src = canvas.toDataURL('image/jpeg');
+                            }
+                            requestAnimationFrame(captureFrame);
+                        }
+                        captureFrame();
+                    } catch (err) {
+                        console.error('Error:', err);
+                    }
+                }
+                startCamera();
+            </script>
+        """, height=480)
+    else:
+        FRAME_WINDOW = st.empty()
+        while True:
+            try:
+                if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
+                    break
+
+                ret, frame = st.session_state.cap.read()
+                if not ret:
+                    break
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Process frame with hand tracker
+                results = st.session_state.hand_tracker.process(frame_rgb)
+                
+                if results.multi_hand_landmarks:
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        mp_drawing.draw_landmarks(
+                            frame_rgb,
+                            hand_landmarks,
+                            mp_hands.HAND_CONNECTIONS,
+                            mp_drawing_styles.get_default_hand_landmarks_style(),
+                            mp_drawing_styles.get_default_hand_connections_style()
+                        )
+                        
+                        # Get landmarks and make prediction
+                        landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                        prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                        predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                        confidence = np.max(prediction[0])
+
+                        # Draw prediction on frame
+                        h, w, _ = frame_rgb.shape
+                        coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
+                        x_min = max(0, min(x for x, y in coords) - 20)
+                        y_min = max(0, min(y for x, y in coords) - 20)
+                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
+                                  (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                                  0.9, (0, 255, 0), 2)
+
+                # Display the frame
+                FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                time.sleep(0.033)  # Cap at ~30 FPS
+                
+            except Exception as e:
+                st.error(f"Camera error: {str(e)}")
+                break
+
 def main():
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
@@ -484,23 +579,15 @@ def test_page():
     if st.session_state.get('mode') == 'camera':
         # Camera controls
         control_col1, control_col2 = st.columns(2)
-        FRAME_WINDOW = st.empty()
         
         with control_col1:
             if not st.session_state.get('camera_active', False):
                 if st.button('Start Camera'):
-                    # Request camera permission and initialize based on environment
-                    request_camera_access()
-                    
                     if IS_HUGGINGFACE:
-                        success = initialize_browser_camera()
-                        if success:
-                            st.session_state['camera_active'] = True
-                            st.success("Camera initialized successfully!")
-                        else:
-                            st.error("Could not initialize camera. Please check permissions and try again.")
+                        request_camera_access()
+                        st.session_state['camera_active'] = True
+                        st.success("Camera initialized successfully!")
                     else:
-                        # Initialize camera for local environment
                         if 'cap' in st.session_state and st.session_state.cap is not None:
                             st.session_state.cap.release()
                         
@@ -517,79 +604,12 @@ def test_page():
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
-                    stop_camera()
+                    cleanup()
                     st.rerun()
 
-        # Main camera loop
+        # Run camera feed if active
         if st.session_state.get('camera_active', False):
-            if IS_HUGGINGFACE:
-                # For browser environment, use JavaScript to capture frames
-                st.components.v1.html("""
-                    <script>
-                        window.addEventListener('message', function(event) {
-                            if (event.data.type === 'video_frame') {
-                                const frameElement = document.getElementById('camera_frame');
-                                if (frameElement) {
-                                    frameElement.src = event.data.data;
-                                }
-                            }
-                        });
-                    </script>
-                    <img id="camera_frame" style="width: 100%; height: auto;" />
-                """)
-            else:
-                # For local environment, use OpenCV
-                while True:
-                    try:
-                        ret, frame = st.session_state.cap.read()
-                        if not ret:
-                            st.error("Failed to read from camera")
-                            cleanup()
-                            break
-
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        
-                        try:
-                            results = st.session_state.hand_tracker.process(frame_rgb)
-                            
-                            if results.multi_hand_landmarks:
-                                for hand_landmarks in results.multi_hand_landmarks:
-                                    mp_drawing.draw_landmarks(
-                                        frame_rgb,
-                                        hand_landmarks,
-                                        mp_hands.HAND_CONNECTIONS,
-                                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                                        mp_drawing_styles.get_default_hand_connections_style()
-                                    )
-                                    
-                                    # Get landmarks and make prediction
-                                    landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                                    prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                                    predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                                    confidence = np.max(prediction[0])
-
-                                    # Draw prediction on frame
-                                    h, w, _ = frame_rgb.shape
-                                    coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
-                                    x_min = max(0, min(x for x, y in coords) - 20)
-                                    y_min = max(0, min(y for x, y in coords) - 20)
-                                    cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
-                                              (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                                              0.9, (0, 255, 0), 2)
-
-                            # Display the frame
-                            FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
-                            time.sleep(0.01)  # Small delay to prevent overwhelming the browser
-                            
-                        except Exception as e:
-                            st.error(f"Error processing frame: {str(e)}")
-                            cleanup()
-                            break
-
-                    except Exception as e:
-                        st.error(f"Camera error: {str(e)}")
-                        cleanup()
-                        break
+            run_camera_feed()
 
     # Upload Mode
     else:
