@@ -23,15 +23,23 @@ jobs:
           git lfs install
           git lfs track "*.h5"
           
-          # Add Hugging Face remote
-          git remote add space https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
+          # Force track existing .h5 files
+          find . -name "*.h5" -type f -exec git add {} \;
           
           # Create/update .gitattributes for LFS
           echo "*.h5 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
           
-          # Stage and commit any changes to .gitattributes
+          # Stage and commit changes
           git add .gitattributes
-          git commit -m "Update .gitattributes" || echo "No changes to .gitattributes"
+          git add "*.h5"
+          git commit -m "Update .gitattributes and track h5 files with LFS" || echo "No changes to commit"
           
-          # Push to Hugging Face
+          # Convert existing .h5 files to LFS
+          git lfs migrate import --include="*.h5" --everything
+          
+          # Add Hugging Face remote
+          git remote add space https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
+          
+          # Push to Hugging Face with LFS
+          git lfs push --all space main
           git push space main --force 
