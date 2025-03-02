@@ -6,7 +6,6 @@ import time
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import platform
 import mediapipe as mp
 
 from src.model import create_landmark_model, load_trained_model, ASLEnsemble
@@ -31,19 +30,29 @@ if IS_LOCAL:
     mp_drawing_styles = mp.solutions.drawing_styles
     hand_tracker = HandTracker(confidence_threshold=0.7)
 
+@st.cache_resource
+def load_cached_model():
+    """Load and cache the model to prevent reloading"""
+    if os.path.exists(MODEL_PATH):
+        with st.spinner('Loading ASL Detection model... This may take a few moments.'):
+            if IS_HUGGINGFACE:
+                # Optimize for Hugging Face environment
+                os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+                tf.config.set_visible_devices([], 'GPU')
+                # Load model with reduced memory usage
+                model = load_trained_model(MODEL_PATH)
+                return model
+            else:
+                return load_trained_model(MODEL_PATH)
+    return None
+
 def init_session_state():
     if 'mode' not in st.session_state:
         st.session_state.mode = 'upload' if IS_HUGGINGFACE else 'camera'
     if 'camera_active' not in st.session_state:
         st.session_state.camera_active = False
     if 'model' not in st.session_state:
-        if os.path.exists(MODEL_PATH):
-            # Configure TensorFlow for the environment
-            if IS_HUGGINGFACE:
-                # Disable GPU warnings and force CPU
-                os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-                tf.config.set_visible_devices([], 'GPU')
-            st.session_state.model = load_trained_model(MODEL_PATH)
+        st.session_state.model = load_cached_model()
     if 'hand_tracker' not in st.session_state and IS_LOCAL:
         st.session_state.hand_tracker = mp_hands.Hands(
             static_image_mode=False,
@@ -53,6 +62,7 @@ def init_session_state():
         )
 
 def check_camera_permission():
+    """Check if camera access is allowed"""
     if IS_HUGGINGFACE:
         return False
     cap = cv2.VideoCapture(0)
@@ -63,6 +73,7 @@ def check_camera_permission():
     return True
 
 def request_camera_access():
+    """Request camera access from browser"""
     if IS_HUGGINGFACE:
         return
     st.components.v1.html("""
@@ -72,7 +83,6 @@ def request_camera_access():
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                     document.getElementById('camera_permission').innerText = 'Camera access granted!';
-                    // Stop the stream since OpenCV will handle the camera
                     stream.getTracks().forEach(track => track.stop());
                 } catch (err) {
                     document.getElementById('camera_permission').innerText = 'Camera access denied: ' + err.message;
@@ -82,43 +92,7 @@ def request_camera_access():
             requestCamera();
         </script>
     """, height=50)
-    time.sleep(2)  # Wait for permission dialog
-
-def initialize_camera():
-    """Initialize primary camera only."""
-    if 'cap' in st.session_state and st.session_state.cap is not None:
-        st.session_state.cap.release()  # Release any existing camera
-        
-    try:
-        cap = cv2.VideoCapture(0)  # Only try primary camera
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            return cap
-        return None
-    except Exception as e:
-        st.error(f"Camera initialization error: {str(e)}")
-        return None
-
-def get_available_cameras():
-    """Test available camera indices and return working ones."""
-    available_cameras = {}
-    
-    # Try indices 0 to 10
-    for i in range(10):
-        try:
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret:
-                    # Add camera to available list
-                    available_cameras[i] = f"Camera {i}"
-                cap.release()
-        except:
-            continue
-    
-    return available_cameras
+    time.sleep(2)
 
 def cleanup():
     """Clean up camera resources safely"""
@@ -131,7 +105,7 @@ def cleanup():
             try:
                 st.session_state.hands.close()
             except:
-                pass  # Ignore MediaPipe close errors
+                pass
             st.session_state.hands = None
             
         st.session_state.camera_active = False
@@ -139,59 +113,45 @@ def cleanup():
         st.error(f"Error during cleanup: {str(e)}")
 
 def get_sample_image(sign):
-    # Get a sample image from the training dataset
+    """Get a sample image from the training dataset"""
     train_dir = "dataset/asl_alphabet_train/asl_alphabet_train"
     sign_dir = os.path.join(train_dir, sign)
     if os.path.exists(sign_dir):
-        # Get first image from the directory
         images = [f for f in os.listdir(sign_dir) if f.endswith(('.jpg', '.jpeg', '.png'))]
         if images:
             return os.path.join(sign_dir, images[0])
     return None
 
 def show_reference_chart():
-    # Create columns for the reference chart
-    cols = st.columns(6)  # 6 columns for compact display
-    
-    # Group the signs into categories
-    alphabets = [chr(i) for i in range(65, 91)]  # A to Z
+    """Display ASL reference chart"""
+    cols = st.columns(6)
+    alphabets = [chr(i) for i in range(65, 91)]
     special = ['del', 'nothing', 'space']
     all_signs = alphabets + special
     
-    # Display signs in a grid layout
     for idx, sign in enumerate(all_signs):
         col_idx = idx % 6
         with cols[col_idx]:
             st.write(f"**{sign}**")
-            # Get and display sample image
             img_path = get_sample_image(sign)
             if img_path:
                 img = Image.open(img_path)
-                # Resize image to make it smaller and consistent
                 img = img.resize((100, 100))
                 st.image(img, use_container_width=True)
 
-def is_running_locally():
-    return IS_LOCAL
-
 def stop_camera():
+    """Stop and release camera resources"""
     if 'cap' in st.session_state:
-        st.session_state.cap.release()  # Release the camera
+        st.session_state.cap.release()
         st.session_state['camera_active'] = False
         st.success('Camera stopped.')
 
 def main():
-    if not check_camera_permission():
-        exit()  # Exit if permission is not granted
-
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
     
     if 'current_mode' not in st.session_state:
         st.session_state.current_mode = "Upload" if IS_HUGGINGFACE else "Camera"
-
-    if 'camera_index' not in st.session_state:
-        st.session_state.camera_index = 0
 
     # Sidebar
     st.sidebar.title("Navigation")
@@ -205,7 +165,7 @@ def main():
     
     page = st.sidebar.radio("Go to", available_pages)
 
-    if page == "Dataset Info":
+    if page == "Dataset Info" and IS_LOCAL:
         dataset_info_page()
     elif page == "Train Model" and IS_LOCAL:
         train_page()
@@ -384,17 +344,15 @@ def train_page():
 def test_page():
     st.title("Real-time ASL Detection")
     
-    if 'model' not in st.session_state:
-        if os.path.exists(MODEL_PATH):
-            st.session_state.model = load_trained_model(MODEL_PATH)
-        else:
-            st.error("Model not found. Please train the model first.")
-            return
-
+    # Load model if not already loaded
+    if st.session_state.model is None:
+        st.error("Model not found. Please train the model first.")
+        return
+    
     # Add reference chart in an expander
     with st.expander("📖 ASL Reference Chart", expanded=True):
         show_reference_chart()
-    
+
     # Mode selection with toggle buttons
     col1, col2 = st.columns(2)
     
