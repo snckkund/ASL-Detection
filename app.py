@@ -185,136 +185,45 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # For Hugging Face, use browser-based camera
+        # For Hugging Face, use browser-based camera with simplified setup
+        st.markdown("""
+            <style>
+            .stVideo {
+                width: 100%;
+                max-width: 640px;
+                margin: 0 auto;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        
         st.components.v1.html("""
-            <div style="position: relative;">
+            <div class="stVideo">
                 <video id="webcam" autoplay playsinline style="width: 100%; max-width: 640px;"></video>
-                <canvas id="canvas" style="display: none;"></canvas>
             </div>
             <script>
                 const video = document.getElementById('webcam');
-                const canvas = document.getElementById('canvas');
-                const ctx = canvas.getContext('2d');
-
-                async function setupCamera() {
+                
+                async function startCamera() {
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
-                                width: 640,
-                                height: 480,
-                                frameRate: 30
+                                width: { ideal: 640 },
+                                height: { ideal: 480 }
                             }
                         });
                         video.srcObject = stream;
                         await video.play();
-                        
-                        // Set canvas size to match video
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        
-                        // Start sending frames
-                        sendFrames();
-                        
+                        console.log('Camera started successfully');
                     } catch (error) {
-                        console.error('Error:', error);
+                        console.error('Error starting camera:', error);
+                        document.body.innerHTML += '<div style="color: red;">Error starting camera: ' + error.message + '</div>';
                     }
                 }
-
-                function sendFrames() {
-                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                        // Draw video frame to canvas
-                        ctx.drawImage(video, 0, 0);
-                        // Get frame data
-                        const imageData = canvas.toDataURL('image/jpeg', 0.8);
-                        // Send to Python
-                        window.parent.postMessage({
-                            type: 'video_frame',
-                            data: imageData
-                        }, '*');
-                    }
-                    // Continue sending frames
-                    requestAnimationFrame(sendFrames);
-                }
-
-                setupCamera();
+                
+                // Start camera when component loads
+                startCamera();
             </script>
         """, height=500)
-        
-        # Add frame receiver
-        st.components.v1.html("""
-            <script>
-                window.addEventListener('message', function(event) {
-                    if (event.data.type === 'video_frame') {
-                        window.streamlit.setComponentValue({
-                            type: 'frame',
-                            data: event.data.data
-                        });
-                    }
-                });
-            </script>
-        """, height=0)
-        
-        # Process frames if available
-        if 'component_value' in st.session_state:
-            try:
-                frame_data = st.session_state.component_value.get('data')
-                if frame_data:
-                    # Convert base64 image to numpy array
-                    encoded_data = frame_data.split(',')[1]
-                    nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                    
-                    if frame is not None:
-                        # Convert to RGB for MediaPipe
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        
-                        # Process with MediaPipe
-                        results = st.session_state.hand_tracker.process(frame_rgb)
-                        
-                        if results.multi_hand_landmarks:
-                            for hand_landmarks in results.multi_hand_landmarks:
-                                # Draw landmarks
-                                mp_drawing.draw_landmarks(
-                                    frame_rgb,
-                                    hand_landmarks,
-                                    mp_hands.HAND_CONNECTIONS,
-                                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                                    mp_drawing_styles.get_default_hand_connections_style()
-                                )
-                                
-                                # Get predictions
-                                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                                confidence = np.max(prediction[0])
-                                
-                                # Draw prediction text
-                                h, w, _ = frame_rgb.shape
-                                x_min = int(min(l.x * w for l in hand_landmarks.landmark))
-                                y_min = int(min(l.y * h for l in hand_landmarks.landmark))
-                                
-                                text = f"{predicted_class} ({confidence:.1%})"
-                                font = cv2.FONT_HERSHEY_SIMPLEX
-                                font_scale = 1
-                                thickness = 2
-                                text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                                
-                                # Draw background rectangle
-                                cv2.rectangle(frame_rgb, 
-                                            (x_min - 10, y_min - text_size[1] - 20),
-                                            (x_min + text_size[0] + 10, y_min),
-                                            (0, 0, 0), -1)
-                                
-                                # Draw text
-                                cv2.putText(frame_rgb, text,
-                                          (x_min, y_min - 10), font,
-                                          font_scale, (255, 255, 255), thickness)
-                        
-                        # Display processed frame
-                        st.image(frame_rgb, channels="RGB", use_container_width=True)
-                        
-            except Exception as e:
-                st.error(f"Error processing frame: {str(e)}")
     else:
         # For local environment, use OpenCV camera
         FRAME_WINDOW = st.empty()
@@ -628,12 +537,9 @@ def test_page():
         with control_col1:
             if not st.session_state.get('camera_active', False):
                 if st.button("📷 Start Camera", key="start_camera"):
-                    request_camera_access()
-                    
-                    # Initialize camera based on environment
                     if IS_HUGGINGFACE:
                         st.session_state['camera_active'] = True
-                        st.success("Camera initialized successfully!")
+                        st.success("Camera initialized. Please allow camera access when prompted.")
                     else:
                         # Local environment - use OpenCV
                         if 'cap' in st.session_state and st.session_state.cap is not None:
