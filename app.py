@@ -324,6 +324,20 @@ def run_camera_feed():
                 st.error(f"Camera error: {str(e)}")
                 break
 
+def get_button_style(active):
+    return f"""
+    <style>
+    div.stButton > button {{
+        background-color: {'#00acee' if active else '#ffffff'};
+        color: {'white' if active else 'black'};
+        width: 100%;
+        padding: 10px;
+        border: {'none' if active else '1px solid #ddd'};
+        border-radius: 5px;
+    }}
+    </style>
+    """
+
 def main():
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
