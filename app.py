@@ -246,12 +246,11 @@ def run_camera_feed():
         # For browser environment, use JavaScript with MediaPipe
         st.components.v1.html("""
             <div style="position: relative; width: 640px; height: 480px;">
-                <video id="camera" autoplay playsinline style="position: absolute; visibility: hidden;"></video>
-                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0;"></canvas>
+                <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
+                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1620248257/camera_utils.js"></script>
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
@@ -261,8 +260,6 @@ def run_camera_feed():
                 // Set initial dimensions
                 canvasElement.width = 640;
                 canvasElement.height = 480;
-                videoElement.width = 640;
-                videoElement.height = 480;
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -281,6 +278,40 @@ def run_camera_feed():
                     ring: [13, 14, 15, 16],
                     pinky: [17, 18, 19, 20]
                 };
+                
+                function drawPrediction(landmarks) {
+                    if (!currentPrediction) return;
+                    
+                    const {label, confidence} = currentPrediction;
+                    
+                    // Find top-left corner of hand bounding box
+                    let minX = Infinity;
+                    let minY = Infinity;
+                    landmarks.forEach(landmark => {
+                        minX = Math.min(minX, landmark.x * canvasElement.width);
+                        minY = Math.min(minY, landmark.y * canvasElement.height);
+                    });
+                    
+                    // Draw prediction text with background
+                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                    const padding = 8;
+                    const fontSize = 20;
+                    canvasCtx.font = `${fontSize}px Arial`;
+                    const textMetrics = canvasCtx.measureText(text);
+                    
+                    // Draw background rectangle
+                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    canvasCtx.fillRect(
+                        minX - padding,
+                        minY - fontSize - padding * 2,
+                        textMetrics.width + padding * 2,
+                        fontSize + padding * 2
+                    );
+                    
+                    // Draw text
+                    canvasCtx.fillStyle = 'white';
+                    canvasCtx.fillText(text, minX, minY - padding);
+                }
                 
                 function onResults(results) {
                     canvasCtx.save();
@@ -306,38 +337,8 @@ def run_camera_feed():
                                 });
                             }
                             
-                            // Draw prediction near hand if available
-                            if (currentPrediction) {
-                                const {label, confidence} = currentPrediction;
-                                
-                                // Find top-left corner of hand bounding box
-                                let minX = Infinity;
-                                let minY = Infinity;
-                                landmarks.forEach(landmark => {
-                                    minX = Math.min(minX, landmark.x * canvasElement.width);
-                                    minY = Math.min(minY, landmark.y * canvasElement.height);
-                                });
-                                
-                                // Draw prediction text with background
-                                const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                                const padding = 8;
-                                const fontSize = 20;
-                                canvasCtx.font = `${fontSize}px Arial`;
-                                const textMetrics = canvasCtx.measureText(text);
-                                
-                                // Draw background rectangle
-                                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                                canvasCtx.fillRect(
-                                    minX - padding,
-                                    minY - fontSize - padding * 2,
-                                    textMetrics.width + padding * 2,
-                                    fontSize + padding * 2
-                                );
-                                
-                                // Draw text
-                                canvasCtx.fillStyle = 'white';
-                                canvasCtx.fillText(text, minX, minY - padding);
-                            }
+                            // Draw prediction
+                            drawPrediction(landmarks);
                             
                             // Send landmarks to Python for prediction
                             window.parent.postMessage({
@@ -366,9 +367,9 @@ def run_camera_feed():
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
+                                facingMode: "user",
                                 width: 640,
-                                height: 480,
-                                frameRate: 30
+                                height: 480
                             }
                         });
                         
@@ -392,6 +393,7 @@ def run_camera_feed():
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
+                    console.log('Updating prediction:', label, confidence);
                     currentPrediction = { label, confidence };
                 };
                 
@@ -436,7 +438,8 @@ def run_camera_feed():
                 st.components.v1.html(
                     f"""
                     <script>
-                        window.updatePrediction('{predicted_class}', {confidence});
+                        console.log('Sending prediction to JS:', '{predicted_class}', {confidence});
+                        window.parent.updatePrediction('{predicted_class}', {confidence});
                     </script>
                     """,
                     height=0
