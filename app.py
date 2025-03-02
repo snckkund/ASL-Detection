@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os
 import time
+import base64
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -243,144 +244,23 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # For browser environment, use JavaScript with MediaPipe
+        # For Hugging Face environment, use Python MediaPipe
         st.components.v1.html("""
             <div style="position: relative; width: 640px; height: 480px;">
                 <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
                 <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
-                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); padding: 5px;"></div>
             </div>
-            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
-                const debugElement = document.getElementById('debug');
                 const canvasCtx = canvasElement.getContext('2d');
-                let currentPrediction = null;
 
                 // Set initial dimensions
                 canvasElement.width = 640;
                 canvasElement.height = 480;
 
-                function showDebug(text) {
-                    debugElement.textContent = text;
-                    console.log(text);
-                }
-
-                // Define colors for different fingers
-                const fingerColors = {
-                    thumb: '#FF0000',      // Red
-                    index: '#00FF00',      // Green
-                    middle: '#0000FF',     // Blue
-                    ring: '#FFFF00',       // Yellow
-                    pinky: '#FF00FF'       // Magenta
-                };
-
-                // Define landmark indices for each finger
-                const fingerLandmarks = {
-                    thumb: [1, 2, 3, 4],
-                    index: [5, 6, 7, 8],
-                    middle: [9, 10, 11, 12],
-                    ring: [13, 14, 15, 16],
-                    pinky: [17, 18, 19, 20]
-                };
-                
-                function drawPrediction(landmarks) {
-                    if (!currentPrediction) return;
-                    
-                    const {label, confidence} = currentPrediction;
-                    showDebug(`Current prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
-                    
-                    // Find top-left corner of hand bounding box
-                    let minX = Infinity;
-                    let minY = Infinity;
-                    landmarks.forEach(landmark => {
-                        minX = Math.min(minX, landmark.x * canvasElement.width);
-                        minY = Math.min(minY, landmark.y * canvasElement.height);
-                    });
-                    
-                    // Draw prediction text with background
-                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                    const padding = 8;
-                    const fontSize = 20;
-                    canvasCtx.font = `${fontSize}px Arial`;
-                    const textMetrics = canvasCtx.measureText(text);
-                    
-                    // Draw background rectangle
-                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                    canvasCtx.fillRect(
-                        minX - padding,
-                        minY - fontSize - padding * 2,
-                        textMetrics.width + padding * 2,
-                        fontSize + padding * 2
-                    );
-                    
-                    // Draw text
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.fillText(text, minX, minY - padding);
-                }
-                
-                function onResults(results) {
-                    try {
-                        canvasCtx.save();
-                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-                        
-                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                            showDebug('Hand detected');
-                            const landmarks = results.multiHandLandmarks[0];
-                            
-                            // Draw connections
-                            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
-                                        {color: '#FFFFFF', lineWidth: 2});
-                            
-                            // Draw landmarks with different colors for each finger
-                            for (const [finger, indices] of Object.entries(fingerLandmarks)) {
-                                const color = fingerColors[finger];
-                                indices.forEach(index => {
-                                    drawLandmarks(canvasCtx, [landmarks[index]], {
-                                        color: color,
-                                        fillColor: color,
-                                        lineWidth: 1,
-                                        radius: 3
-                                    });
-                                });
-                            }
-                            
-                            // Draw prediction
-                            drawPrediction(landmarks);
-                            
-                            // Send landmarks to Python for prediction
-                            window.parent.postMessage({
-                                type: 'hand_landmarks',
-                                landmarks: landmarks
-                            }, '*');
-                        } else {
-                            showDebug('No hand detected');
-                        }
-                        canvasCtx.restore();
-                    } catch (error) {
-                        showDebug('Error in onResults: ' + error.message);
-                    }
-                }
-                
-                const hands = new Hands({locateFile: (file) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
-                }});
-                
-                hands.setOptions({
-                    maxNumHands: 1,
-                    modelComplexity: 1,
-                    minDetectionConfidence: 0.5,
-                    minTrackingConfidence: 0.5
-                });
-                
-                hands.onResults(onResults);
-                
                 async function startCamera() {
                     try {
-                        showDebug('Initializing camera...');
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
                                 facingMode: "user",
@@ -390,89 +270,111 @@ def run_camera_feed():
                         });
                         
                         videoElement.srcObject = stream;
-                        showDebug('Camera initialized, waiting for video to play...');
-                        
                         videoElement.onloadedmetadata = () => {
-                            showDebug('Video metadata loaded');
                             videoElement.play().then(() => {
-                                showDebug('Video playing, starting hand detection...');
                                 // Start continuous frame processing
                                 function processFrame() {
-                                    try {
-                                        if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                                            hands.send({image: videoElement});
-                                        }
-                                        requestAnimationFrame(processFrame);
-                                    } catch (error) {
-                                        showDebug('Error in processFrame: ' + error.message);
+                                    if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                                        // Draw video frame to canvas
+                                        canvasCtx.drawImage(videoElement, 0, 0);
+                                        // Send frame data to Python
+                                        const imageData = canvasElement.toDataURL('image/jpeg', 0.8);
+                                        window.streamlit.setComponentValue({
+                                            type: 'video_frame',
+                                            data: imageData
+                                        });
                                     }
+                                    requestAnimationFrame(processFrame);
                                 }
                                 processFrame();
-                            }).catch(error => {
-                                showDebug('Error playing video: ' + error.message);
                             });
                         };
-                        
                     } catch (err) {
-                        showDebug('Camera error: ' + err.message);
+                        console.error('Camera error:', err);
                     }
                 }
                 
-                // Function to update prediction display
-                window.updatePrediction = function(label, confidence) {
-                    showDebug(`Received prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
-                    currentPrediction = { label, confidence };
-                };
-                
-                showDebug('Starting camera...');
                 startCamera();
             </script>
         """, height=500)
-        
-        # Handle landmark data from JavaScript and make predictions
-        st.components.v1.html(
-            """
-            <script>
-                window.addEventListener('message', function(event) {
-                    if (event.data.type === 'hand_landmarks') {
-                        const landmarks = event.data.landmarks;
-                        window.streamlit.setComponentValue({
-                            type: 'landmarks',
-                            data: landmarks
-                        });
-                    }
-                });
-            </script>
-            """,
-            height=0
+
+        # Initialize MediaPipe Hands
+        hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
+
+        # Create placeholder for video frame
+        frame_placeholder = st.empty()
         
-        # Process landmarks and update predictions
-        if st.session_state.get('component_value'):
+        # Process incoming frames
+        while True:
             try:
-                landmarks_data = st.session_state.component_value['data']
-                # Create flattened array of landmarks
-                landmarks_flat = []
-                for l in landmarks_data:
-                    landmarks_flat.extend([l['x'], l['y'], l['z']])
-                landmarks = np.array(landmarks_flat)
+                # Get frame data from JavaScript
+                frame_data = st.session_state.get('video_frame')
+                if frame_data and frame_data.get('data'):
+                    # Convert base64 image to numpy array
+                    img_str = frame_data['data'].split(',')[1]
+                    img_bytes = base64.b64decode(img_str)
+                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    
+                    # Convert BGR to RGB
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Process frame with MediaPipe
+                    results = hands.process(rgb_frame)
+                    
+                    # Draw hand landmarks
+                    if results.multi_hand_landmarks:
+                        for hand_landmarks in results.multi_hand_landmarks:
+                            mp_drawing.draw_landmarks(
+                                rgb_frame,
+                                hand_landmarks,
+                                mp_hands.HAND_CONNECTIONS,
+                                mp_drawing_styles.get_default_hand_landmarks_style(),
+                                mp_drawing_styles.get_default_hand_connections_style()
+                            )
+                            
+                            # Get hand landmarks for prediction
+                            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+                            
+                            # Make prediction if model is loaded
+                            if st.session_state.model:
+                                # Prepare landmarks for prediction
+                                landmarks_flat = landmarks.flatten()
+                                prediction = st.session_state.model.predict(landmarks_flat.reshape(1, -1))
+                                predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
+                                confidence = np.max(prediction)
+                                
+                                # Draw prediction text
+                                cv2.putText(
+                                    rgb_frame,
+                                    f"{predicted_class} ({confidence:.2f})",
+                                    (10, 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    1,
+                                    (255, 255, 255),
+                                    2
+                                )
+                    
+                    # Convert back to BGR for display
+                    frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                    
+                    # Display the frame
+                    frame_placeholder.image(frame, channels="BGR")
+                    
+                    # Add small delay to prevent overwhelming the browser
+                    time.sleep(0.03)
                 
-                # Make prediction
-                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                confidence = float(np.max(prediction[0]))
-                
-                # Send prediction back to JavaScript
-                st.components.v1.html(
-                    f"""
-                    <script>
-                        window.parent.updatePrediction('{predicted_class}', {confidence});
-                    </script>
-                    """,
-                    height=0
-                )
             except Exception as e:
-                print(f"Prediction error: {str(e)}")
+                st.error(f"Error processing frame: {str(e)}")
+                break
+        
+        # Clean up
+        hands.close()
     else:
         FRAME_WINDOW = st.empty()
         while True:
@@ -776,7 +678,7 @@ def test_page():
                         if 'cap' in st.session_state and st.session_state.cap is not None:
                             st.session_state.cap.release()
                         
-                        st.session_state.cap = cv2.VideoCapture(0)
+                        st.session_state.cap = cv2.VideoCapture(1)
                         if st.session_state.cap.isOpened():
                             st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                             st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
