@@ -164,10 +164,11 @@ def initialize_browser_camera():
                         return true;
                     } catch (err) {
                         console.error('Error:', err);
-                        return false;
+                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
                     }
                 }
                 
+                // Start camera when component loads
                 startCamera().then(success => {
                     window.cameraInitialized = success;
                 });
@@ -242,13 +243,57 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # For browser environment, use JavaScript to capture frames
+        # For browser environment, use JavaScript with MediaPipe
         st.components.v1.html("""
             <div>
-                <video id="camera" autoplay playsinline style="width: 100%; max-width: 640px; height: auto;"></video>
+                <video id="camera" autoplay playsinline style="display: none;"></video>
+                <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
             </div>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1620248257/camera_utils.js"></script>
             <script>
-                const video = document.getElementById('camera');
+                const videoElement = document.getElementById('camera');
+                const canvasElement = document.getElementById('output_canvas');
+                const canvasCtx = canvasElement.getContext('2d');
+                
+                function onResults(results) {
+                    // Set canvas dimensions to match video
+                    canvasElement.width = videoElement.videoWidth;
+                    canvasElement.height = videoElement.videoHeight;
+                    
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                    
+                    if (results.multiHandLandmarks) {
+                        for (const landmarks of results.multiHandLandmarks) {
+                            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
+                                        {color: '#00FF00', lineWidth: 5});
+                            drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
+                            
+                            // Send landmarks to Python for prediction
+                            window.parent.postMessage({
+                                type: 'hand_landmarks',
+                                landmarks: landmarks
+                            }, '*');
+                        }
+                    }
+                    canvasCtx.restore();
+                }
+                
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
+                }});
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onResults);
                 
                 async function startCamera() {
                     try {
@@ -260,19 +305,52 @@ def run_camera_feed():
                             }
                         });
                         
-                        // Connect stream directly to video element
-                        video.srcObject = stream;
-                        video.play();
+                        videoElement.srcObject = stream;
+                        await videoElement.play();
+                        
+                        // Start hand detection
+                        const camera = new Camera(videoElement, {
+                            onFrame: async () => {
+                                await hands.send({image: videoElement});
+                            },
+                            width: 640,
+                            height: 480
+                        });
+                        camera.start();
+                        
                     } catch (err) {
                         console.error('Camera error:', err);
                         document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
                     }
                 }
                 
-                // Start camera when component loads
                 startCamera();
             </script>
-        """, height=500)  
+        """, height=500)
+        
+        # Add a placeholder for displaying predictions
+        if 'prediction_display' not in st.session_state:
+            st.session_state.prediction_display = st.empty()
+            
+        # Handle landmark data from JavaScript
+        components.html(
+            """
+            <script>
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'hand_landmarks') {
+                        const landmarks = event.data.landmarks;
+                        // Send landmarks to Python for prediction
+                        window.streamlit.setComponentValue({
+                            type: 'landmarks',
+                            data: landmarks
+                        });
+                    }
+                });
+            </script>
+            """,
+            height=0,
+        )
+        
     else:
         FRAME_WINDOW = st.empty()
         while True:
