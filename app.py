@@ -43,51 +43,51 @@ def init_session_state():
             min_tracking_confidence=0.5
         )
 
+def check_camera_permission():
+    # Try to access the camera
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Camera access denied. Please allow camera access to use this feature.")
+        return False
+    cap.release()
+    return True
+
+def request_camera_access():
+    st.components.v1.html("""
+        <div id="camera_permission">Requesting camera access...</div>
+        <script>
+            async function requestCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    document.getElementById('camera_permission').innerText = 'Camera access granted!';
+                    // Stop the stream since OpenCV will handle the camera
+                    stream.getTracks().forEach(track => track.stop());
+                } catch (err) {
+                    document.getElementById('camera_permission').innerText = 'Camera access denied: ' + err.message;
+                    console.error('Error:', err);
+                }
+            }
+            requestCamera();
+        </script>
+    """, height=50)
+    time.sleep(2)  # Wait for permission dialog
+
 def initialize_camera():
-    """Initialize camera with better error handling."""
-    camera = None
-    
-    # Try multiple camera indices and backends
-    backends = [
-        (cv2.CAP_DSHOW, "DirectShow"),
-        (cv2.CAP_ANY, "Default"),
-        (None, "Legacy")
-    ]
-    
-    for index in range(3):  # Try first 3 camera indices
-        for backend, backend_name in backends:
-            try:
-                if backend is not None:
-                    camera = cv2.VideoCapture(index, backend)
-                else:
-                    camera = cv2.VideoCapture(index)
-                
-                if camera and camera.isOpened():
-                    ret, _ = camera.read()
-                    if ret:
-                        print(f"Camera initialized successfully on index {index} with {backend_name}")
-                        # Set camera properties
-                        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        camera.set(cv2.CAP_PROP_FPS, 30)
-                        return camera
-                    camera.release()
-            except Exception as e:
-                print(f"Failed to initialize camera {index} with {backend_name}: {str(e)}")
-                if camera:
-                    camera.release()
-                continue
-    
-    # If we get here, no camera was successfully initialized
-    st.error("""
-    Camera initialization failed. Please try:
-    1. Refreshing the page
-    2. Checking camera permissions in your browser
-    3. Disconnecting and reconnecting your camera
-    4. Closing other applications that might be using the camera
-    5. Using a different USB port
-    """)
-    return None
+    """Initialize primary camera only."""
+    if 'cap' in st.session_state and st.session_state.cap is not None:
+        st.session_state.cap.release()  # Release any existing camera
+        
+    try:
+        cap = cv2.VideoCapture(0)  # Only try primary camera
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            return cap
+        return None
+    except Exception as e:
+        st.error(f"Camera initialization error: {str(e)}")
+        return None
 
 def get_available_cameras():
     """Test available camera indices and return working ones."""
@@ -167,9 +167,18 @@ def is_running_locally():
             return False
         return True
     except:
-        return False
+        return True
+
+def stop_camera():
+    if 'cap' in st.session_state:
+        st.session_state.cap.release()  # Release the camera
+        st.session_state['camera_active'] = False
+        st.success('Camera stopped.')
 
 def main():
+    if not check_camera_permission():
+        exit()  # Exit if permission is not granted
+
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
     
@@ -418,30 +427,38 @@ def test_page():
     if st.session_state.get('mode') == 'camera':
         # Camera controls
         control_col1, control_col2 = st.columns(2)
-        frame_placeholder = st.empty()
+        FRAME_WINDOW = st.empty()
         
         with control_col1:
             if not st.session_state.get('camera_active', False):
-                if st.button("▶️ Start Camera", key="start_camera"):
+                if st.button('Start Camera'):
+                    request_camera_access()  # Request browser permission first
+                    time.sleep(1)  # Give time for browser permission dialog
+                    
+                    # Initialize camera
+                    if 'cap' in st.session_state and st.session_state.cap is not None:
+                        st.session_state.cap.release()
+                    
                     st.session_state.cap = cv2.VideoCapture(0)
-                    if not st.session_state.cap.isOpened():
-                        st.error("Could not open camera. Please check permissions.")
-                        return
-                    st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                    st.session_state.cap.set(cv2.CAP_PROP_FPS, 30)
-                    st.session_state.camera_active = True
-        
+                    if st.session_state.cap.isOpened():
+                        st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        st.session_state['camera_active'] = True
+                        st.success("Camera initialized successfully!")
+                    else:
+                        st.error("Could not initialize camera. Please check permissions.")
+
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
-                    cleanup()
+                    stop_camera()
                     st.rerun()
 
         # Main camera loop
         if st.session_state.get('camera_active', False) and hasattr(st.session_state, 'cap'):
-            try:
-                while st.session_state.camera_active:
+            FRAME_WINDOW = st.empty()
+            while True:
+                try:
                     ret, frame = st.session_state.cap.read()
                     if not ret:
                         st.error("Failed to read from camera")
@@ -462,12 +479,14 @@ def test_page():
                                     mp_drawing_styles.get_default_hand_landmarks_style(),
                                     mp_drawing_styles.get_default_hand_connections_style()
                                 )
-
+                                
+                                # Get landmarks and make prediction
                                 landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
                                 prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                                 predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
                                 confidence = np.max(prediction[0])
 
+                                # Draw prediction on frame
                                 h, w, _ = frame_rgb.shape
                                 coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
                                 x_min = max(0, min(x for x, y in coords) - 20)
@@ -476,20 +495,19 @@ def test_page():
                                           (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
                                           0.9, (0, 255, 0), 2)
 
-                        frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                        # Display the frame
+                        FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                        time.sleep(0.01)  # Small delay to prevent overwhelming the browser
                         
                     except Exception as e:
-                        print(f"Frame processing error: {e}")
-                        continue
+                        st.error(f"Error processing frame: {str(e)}")
+                        cleanup()
+                        break
 
-                    time.sleep(0.03)
-
-            except Exception as e:
-                st.error(f"Camera error: {str(e)}")
-                cleanup()
-            finally:
-                cleanup()
-
+                except Exception as e:
+                    st.error(f"Camera error: {str(e)}")
+                    cleanup()
+                    break
     # Upload Mode
     else:
         uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
@@ -524,7 +542,7 @@ def test_page():
                             mp_drawing_styles.get_default_hand_landmarks_style(),
                             mp_drawing_styles.get_default_hand_connections_style()
                         )
-                    
+                        
                         # Extract landmarks and predict
                         landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
                         prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
@@ -534,9 +552,9 @@ def test_page():
                         # Show both original and processed images
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.image(image_rgb, caption="Original Image", use_container_width=True)
+                            st.image(image_rgb, caption="Original Image", use_column_width=True)
                         with col2:
-                            st.image(image_with_landmarks, caption="Detected Hand Landmarks", use_container_width=True)
+                            st.image(image_with_landmarks, caption="Detected Hand Landmarks", use_column_width=True)
                         with col3:
                             st.markdown(f"""
                                 <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
@@ -546,7 +564,7 @@ def test_page():
                                 </div>
                             """, unsafe_allow_html=True)
                 else:
-                    st.image(image_rgb, caption="Original Image", use_container_width=True)
+                    st.image(image_rgb, caption="Original Image", use_column_width=True)
                     st.error("No hand detected in the image. Please ensure the hand is clearly visible.")
                 
                 # Clean up the image hand tracker
