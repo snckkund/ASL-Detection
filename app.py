@@ -247,19 +247,7 @@ def run_camera_feed():
         st.components.v1.html("""
             <div style="position: relative;">
                 <video id="camera" autoplay playsinline style="display: none;"></video>
-                <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
-                <div id="prediction" style="
-                    position: absolute;
-                    top: 20px;
-                    left: 20px;
-                    background: rgba(0, 0, 0, 0.7);
-                    color: white;
-                    padding: 10px 15px;
-                    border-radius: 5px;
-                    font-size: 20px;
-                    font-weight: bold;
-                    z-index: 1000;
-                "></div>
+                <canvas id="output_canvas" style="width: 640px; height: 480px;"></canvas>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -267,8 +255,8 @@ def run_camera_feed():
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
-                const predictionElement = document.getElementById('prediction');
                 const canvasCtx = canvasElement.getContext('2d');
+                let currentPrediction = null;
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -289,15 +277,12 @@ def run_camera_feed():
                 };
                 
                 function onResults(results) {
-                    // Set canvas size maintaining aspect ratio
-                    const aspectRatio = videoElement.videoHeight / videoElement.videoWidth;
+                    // Set fixed dimensions
                     canvasElement.width = 640;
-                    canvasElement.height = canvasElement.width * aspectRatio;
+                    canvasElement.height = 480;
                     
                     canvasCtx.save();
                     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                    
-                    // Draw video maintaining aspect ratio
                     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
                     
                     if (results.multiHandLandmarks) {
@@ -317,6 +302,39 @@ def run_camera_feed():
                                         radius: 3
                                     });
                                 });
+                            }
+                            
+                            // Draw prediction near hand if available
+                            if (currentPrediction) {
+                                const {label, confidence} = currentPrediction;
+                                
+                                // Find top-left corner of hand bounding box
+                                let minX = Infinity;
+                                let minY = Infinity;
+                                landmarks.forEach(landmark => {
+                                    minX = Math.min(minX, landmark.x * canvasElement.width);
+                                    minY = Math.min(minY, landmark.y * canvasElement.height);
+                                });
+                                
+                                // Draw prediction text with background
+                                const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                                const padding = 8;
+                                const fontSize = 20;
+                                canvasCtx.font = `${fontSize}px Arial`;
+                                const textMetrics = canvasCtx.measureText(text);
+                                
+                                // Draw background rectangle
+                                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                canvasCtx.fillRect(
+                                    minX - padding,
+                                    minY - fontSize - padding * 2,
+                                    textMetrics.width + padding * 2,
+                                    fontSize + padding * 2
+                                );
+                                
+                                // Draw text
+                                canvasCtx.fillStyle = 'white';
+                                canvasCtx.fillText(text, minX, minY - padding);
                             }
                             
                             // Send landmarks to Python for prediction
@@ -346,13 +364,15 @@ def run_camera_feed():
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
-                                width: { ideal: 640 },
-                                height: { ideal: 480 },
+                                width: { exact: 640 },
+                                height: { exact: 480 },
                                 frameRate: { ideal: 30 }
                             }
                         });
                         
                         videoElement.srcObject = stream;
+                        videoElement.width = 640;
+                        videoElement.height = 480;
                         await videoElement.play();
                         
                         // Start continuous frame processing
@@ -372,8 +392,7 @@ def run_camera_feed():
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
-                    predictionElement.textContent = `Predicted: ${label} (${(confidence * 100).toFixed(1)}%)`;
-                    predictionElement.style.display = 'block';
+                    currentPrediction = { label, confidence };
                 };
                 
                 startCamera();
