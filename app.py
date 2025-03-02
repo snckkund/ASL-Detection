@@ -149,6 +149,18 @@ def initialize_browser_camera():
                         
                         // Store stream in window object for later access
                         window.cameraStream = stream;
+                        
+                        // Start frame capture loop
+                        function captureFrame() {
+                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                const imageData = canvas.toDataURL('image/jpeg');
+                                window.parent.postMessage({type: 'video_frame', data: imageData}, '*');
+                            }
+                            requestAnimationFrame(captureFrame);
+                        }
+                        captureFrame();
+                        
                         return true;
                     } catch (err) {
                         console.error('Error:', err);
@@ -509,59 +521,75 @@ def test_page():
                     st.rerun()
 
         # Main camera loop
-        if st.session_state.get('camera_active', False) and hasattr(st.session_state, 'cap'):
-            FRAME_WINDOW = st.empty()
-            while True:
-                try:
-                    ret, frame = st.session_state.cap.read()
-                    if not ret:
-                        st.error("Failed to read from camera")
-                        cleanup()
-                        break
-
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
+        if st.session_state.get('camera_active', False):
+            if IS_HUGGINGFACE:
+                # For browser environment, use JavaScript to capture frames
+                st.components.v1.html("""
+                    <script>
+                        window.addEventListener('message', function(event) {
+                            if (event.data.type === 'video_frame') {
+                                const frameElement = document.getElementById('camera_frame');
+                                if (frameElement) {
+                                    frameElement.src = event.data.data;
+                                }
+                            }
+                        });
+                    </script>
+                    <img id="camera_frame" style="width: 100%; height: auto;" />
+                """)
+            else:
+                # For local environment, use OpenCV
+                while True:
                     try:
-                        results = st.session_state.hand_tracker.process(frame_rgb)
-                        
-                        if results.multi_hand_landmarks:
-                            for hand_landmarks in results.multi_hand_landmarks:
-                                mp_drawing.draw_landmarks(
-                                    frame_rgb,
-                                    hand_landmarks,
-                                    mp_hands.HAND_CONNECTIONS,
-                                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                                    mp_drawing_styles.get_default_hand_connections_style()
-                                )
-                                
-                                # Get landmarks and make prediction
-                                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                                confidence = np.max(prediction[0])
+                        ret, frame = st.session_state.cap.read()
+                        if not ret:
+                            st.error("Failed to read from camera")
+                            cleanup()
+                            break
 
-                                # Draw prediction on frame
-                                h, w, _ = frame_rgb.shape
-                                coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
-                                x_min = max(0, min(x for x, y in coords) - 20)
-                                y_min = max(0, min(y for x, y in coords) - 20)
-                                cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
-                                          (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                                          0.9, (0, 255, 0), 2)
-
-                        # Display the frame
-                        FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
-                        time.sleep(0.01)  # Small delay to prevent overwhelming the browser
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         
+                        try:
+                            results = st.session_state.hand_tracker.process(frame_rgb)
+                            
+                            if results.multi_hand_landmarks:
+                                for hand_landmarks in results.multi_hand_landmarks:
+                                    mp_drawing.draw_landmarks(
+                                        frame_rgb,
+                                        hand_landmarks,
+                                        mp_hands.HAND_CONNECTIONS,
+                                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                                        mp_drawing_styles.get_default_hand_connections_style()
+                                    )
+                                    
+                                    # Get landmarks and make prediction
+                                    landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                                    prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                                    predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                                    confidence = np.max(prediction[0])
+
+                                    # Draw prediction on frame
+                                    h, w, _ = frame_rgb.shape
+                                    coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
+                                    x_min = max(0, min(x for x, y in coords) - 20)
+                                    y_min = max(0, min(y for x, y in coords) - 20)
+                                    cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
+                                              (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                                              0.9, (0, 255, 0), 2)
+
+                            # Display the frame
+                            FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                            time.sleep(0.01)  # Small delay to prevent overwhelming the browser
+                            
+                        except Exception as e:
+                            st.error(f"Error processing frame: {str(e)}")
+                            cleanup()
+                            break
+
                     except Exception as e:
-                        st.error(f"Error processing frame: {str(e)}")
+                        st.error(f"Camera error: {str(e)}")
                         cleanup()
                         break
-
-                except Exception as e:
-                    st.error(f"Camera error: {str(e)}")
-                    cleanup()
-                    break
 
     # Upload Mode
     else:
