@@ -159,6 +159,16 @@ def show_reference_chart():
                 img = img.resize((100, 100))
                 st.image(img, use_container_width=True)
 
+def is_running_locally():
+    """Check if the app is running locally"""
+    try:
+        # Check for HuggingFace Space environment
+        if "SPACE_ID" in os.environ:
+            return False
+        return True
+    except:
+        return False
+
 def main():
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
@@ -171,11 +181,17 @@ def main():
 
     # Sidebar
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Dataset Info", "Train Model", "Test Model"])
+    
+    # Only show Train Model option if running locally
+    available_pages = ["Dataset Info", "Test Model"]
+    if is_running_locally():
+        available_pages.insert(1, "Train Model")
+    
+    page = st.sidebar.radio("Go to", available_pages)
 
     if page == "Dataset Info":
         dataset_info_page()
-    elif page == "Train Model":
+    elif page == "Train Model" and is_running_locally():
         train_page()
     else:
         test_page()
