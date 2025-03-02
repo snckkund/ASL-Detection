@@ -17,6 +17,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Initialize MediaPipe
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+
 # Detect environment
 IS_HUGGINGFACE = "SPACE_ID" in os.environ
 IS_LOCAL = not IS_HUGGINGFACE
@@ -25,23 +30,35 @@ IS_LOCAL = not IS_HUGGINGFACE
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
-hand_tracker = HandTracker(confidence_threshold=0.7)
 
-# Define paths
-CHART_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'chart.jpg')
+def init_session_state():
+    """Initialize session state variables"""
+    if 'model' not in st.session_state:
+        st.session_state.model = load_cached_model()
+    
+    if 'hand_tracker' not in st.session_state:
+        st.session_state.hand_tracker = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+    
+    if 'mode' not in st.session_state:
+        st.session_state.mode = 'camera'
+    
+    if 'camera_active' not in st.session_state:
+        st.session_state.camera_active = False
 
-from src.model import create_landmark_model, load_trained_model, ASLEnsemble
-from src.data_utils import (
-    create_dataset, process_uploaded_image, get_dataset_stats,
-    plot_dataset_distribution, get_sample_images, extract_hand_landmarks, create_landmark_dataset
-)
-from src.config import (
-    TRAIN_DIR, TEST_DIR, MODEL_PATH, MODEL_DIR,
-    IDX_TO_CLASS, IMG_SIZE, EPOCHS
-)
-from src.hand_tracking import HandTracker
+def cleanup():
+    """Cleanup resources"""
+    if 'hand_tracker' in st.session_state:
+        st.session_state.hand_tracker.close()
+        del st.session_state.hand_tracker
+    
+    if 'camera_active' in st.session_state:
+        st.session_state.camera_active = False
 
-@st.cache_resource
 def load_cached_model():
     """Load and cache the model to prevent reloading"""
     if os.path.exists(MODEL_PATH):
@@ -55,22 +72,16 @@ def load_cached_model():
             return model
     return None
 
-def init_session_state():
-    if 'mode' not in st.session_state:
-        st.session_state.mode = 'camera'  # Default to camera for all environments
-    if 'camera_active' not in st.session_state:
-        st.session_state.camera_active = False
-    if 'model' not in st.session_state:
-        st.session_state.model = load_cached_model()
-    if 'hand_tracker' not in st.session_state:
-        st.session_state.hand_tracker = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-    if 'camera_permission_requested' not in st.session_state:
-        st.session_state.camera_permission_requested = False
+from src.model import create_landmark_model, load_trained_model, ASLEnsemble
+from src.data_utils import (
+    create_dataset, process_uploaded_image, get_dataset_stats,
+    plot_dataset_distribution, get_sample_images, extract_hand_landmarks, create_landmark_dataset
+)
+from src.config import (
+    TRAIN_DIR, TEST_DIR, MODEL_PATH, MODEL_DIR,
+    IDX_TO_CLASS, IMG_SIZE, EPOCHS
+)
+from src.hand_tracking import HandTracker
 
 def check_camera_permission():
     """Check if camera access is allowed"""
@@ -130,24 +141,6 @@ def initialize_camera():
     except Exception as e:
         st.error(f"Error initializing camera: {str(e)}")
         return None
-
-def cleanup():
-    """Clean up camera resources safely"""
-    try:
-        if hasattr(st.session_state, 'cap') and st.session_state.cap is not None:
-            st.session_state.cap.release()
-            st.session_state.cap = None
-            
-        if hasattr(st.session_state, 'hands') and st.session_state.hands is not None:
-            try:
-                st.session_state.hands.close()
-            except:
-                pass
-            st.session_state.hands = None
-            
-        st.session_state.camera_active = False
-    except Exception as e:
-        st.error(f"Error during cleanup: {str(e)}")
 
 def show_reference_chart():
     """Display ASL reference chart"""
@@ -568,7 +561,7 @@ def train_page():
                 landmark_status.text(f"Processing class: {class_name} ({idx + 1}/{total_classes})")
                 
                 # Process images in this class
-                class_landmarks, class_labels = create_landmark_dataset(class_path, hand_tracker)
+                class_landmarks, class_labels = create_landmark_dataset(class_path, st.session_state.hand_tracker)
                 if class_landmarks is not None and class_labels is not None:
                     train_landmarks.extend(class_landmarks)
                     train_labels.extend(class_labels)
