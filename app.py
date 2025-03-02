@@ -245,7 +245,7 @@ def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
         # For Hugging Face environment, use Python MediaPipe
-        st.components.v1.html("""
+        video_html = st.components.v1.html("""
             <div style="position: relative; width: 640px; height: 480px;">
                 <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
                 <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
@@ -299,6 +299,9 @@ def run_camera_feed():
         """, height=500)
 
         # Initialize MediaPipe Hands
+        mp_hands = mp.solutions.hands
+        mp_drawing = mp.solutions.drawing_utils
+        mp_drawing_styles = mp.solutions.drawing_styles
         hands = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -309,7 +312,13 @@ def run_camera_feed():
         # Create placeholder for video frame
         frame_placeholder = st.empty()
         
-        # Process incoming frames
+        # Create a container for the video feed
+        video_container = st.container()
+        
+        # Use a session state variable to track frame updates
+        if 'frame_count' not in st.session_state:
+            st.session_state.frame_count = 0
+            
         while True:
             try:
                 # Get frame data from JavaScript
@@ -363,11 +372,15 @@ def run_camera_feed():
                     # Convert back to BGR for display
                     frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
                     
-                    # Display the frame
-                    frame_placeholder.image(frame, channels="BGR")
+                    # Update frame count to force refresh
+                    st.session_state.frame_count += 1
                     
-                    # Add small delay to prevent overwhelming the browser
-                    time.sleep(0.03)
+                    # Display the frame in the container
+                    with video_container:
+                        st.image(frame, channels="BGR", caption=f"Frame {st.session_state.frame_count}")
+                    
+                    # Rerun to update the UI
+                    st.experimental_rerun()
                 
             except Exception as e:
                 st.error(f"Error processing frame: {str(e)}")
