@@ -245,9 +245,9 @@ def run_camera_feed():
     if IS_HUGGINGFACE:
         # For browser environment, use JavaScript with MediaPipe
         st.components.v1.html("""
-            <div style="position: relative;">
-                <video id="camera" autoplay playsinline style="display: none;"></video>
-                <canvas id="output_canvas" style="width: 640px; height: 480px;"></canvas>
+            <div style="position: relative; width: 640px; height: 480px;">
+                <video id="camera" autoplay playsinline style="position: absolute; visibility: hidden;"></video>
+                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0;"></canvas>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -257,6 +257,12 @@ def run_camera_feed():
                 const canvasElement = document.getElementById('output_canvas');
                 const canvasCtx = canvasElement.getContext('2d');
                 let currentPrediction = null;
+
+                // Set initial dimensions
+                canvasElement.width = 640;
+                canvasElement.height = 480;
+                videoElement.width = 640;
+                videoElement.height = 480;
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -277,10 +283,6 @@ def run_camera_feed():
                 };
                 
                 function onResults(results) {
-                    // Set fixed dimensions
-                    canvasElement.width = 640;
-                    canvasElement.height = 480;
-                    
                     canvasCtx.save();
                     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
@@ -364,15 +366,13 @@ def run_camera_feed():
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
-                                width: { exact: 640 },
-                                height: { exact: 480 },
-                                frameRate: { ideal: 30 }
+                                width: 640,
+                                height: 480,
+                                frameRate: 30
                             }
                         });
                         
                         videoElement.srcObject = stream;
-                        videoElement.width = 640;
-                        videoElement.height = 480;
                         await videoElement.play();
                         
                         // Start continuous frame processing
