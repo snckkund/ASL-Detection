@@ -242,285 +242,97 @@ def stop_camera():
 
 def run_camera_feed():
     """Run the camera feed continuously"""
-    if IS_HUGGINGFACE:
-        # For browser environment, use JavaScript with MediaPipe
-        st.components.v1.html("""
-            <div style="position: relative; width: 640px; height: 480px;">
-                <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
-                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
-                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); padding: 5px;"></div>
-            </div>
-            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
-            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
-            <script>
-                const videoElement = document.getElementById('camera');
-                const canvasElement = document.getElementById('output_canvas');
-                const debugElement = document.getElementById('debug');
-                const canvasCtx = canvasElement.getContext('2d');
-                let currentPrediction = null;
-
-                // Set initial dimensions
-                canvasElement.width = 640;
-                canvasElement.height = 480;
-
-                function showDebug(text) {
-                    debugElement.textContent = text;
-                    console.log(text);
-                }
-
-                // Define colors for different fingers
-                const fingerColors = {
-                    thumb: '#FF0000',      // Red
-                    index: '#00FF00',      // Green
-                    middle: '#0000FF',     // Blue
-                    ring: '#FFFF00',       // Yellow
-                    pinky: '#FF00FF'       // Magenta
-                };
-
-                // Define landmark indices for each finger
-                const fingerLandmarks = {
-                    thumb: [1, 2, 3, 4],
-                    index: [5, 6, 7, 8],
-                    middle: [9, 10, 11, 12],
-                    ring: [13, 14, 15, 16],
-                    pinky: [17, 18, 19, 20]
-                };
-                
-                function drawPrediction(landmarks) {
-                    if (!currentPrediction) return;
-                    
-                    const {label, confidence} = currentPrediction;
-                    showDebug(`Current prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
-                    
-                    // Find top-left corner of hand bounding box
-                    let minX = Infinity;
-                    let minY = Infinity;
-                    landmarks.forEach(landmark => {
-                        minX = Math.min(minX, landmark.x * canvasElement.width);
-                        minY = Math.min(minY, landmark.y * canvasElement.height);
-                    });
-                    
-                    // Draw prediction text with background
-                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                    const padding = 8;
-                    const fontSize = 20;
-                    canvasCtx.font = `${fontSize}px Arial`;
-                    const textMetrics = canvasCtx.measureText(text);
-                    
-                    // Draw background rectangle
-                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                    canvasCtx.fillRect(
-                        minX - padding,
-                        minY - fontSize - padding * 2,
-                        textMetrics.width + padding * 2,
-                        fontSize + padding * 2
-                    );
-                    
-                    // Draw text
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.fillText(text, minX, minY - padding);
-                }
-                
-                function onResults(results) {
-                    try {
-                        canvasCtx.save();
-                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-                        
-                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                            showDebug('Hand detected');
-                            const landmarks = results.multiHandLandmarks[0];
-                            
-                            // Draw connections
-                            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
-                                        {color: '#FFFFFF', lineWidth: 2});
-                            
-                            // Draw landmarks with different colors for each finger
-                            for (const [finger, indices] of Object.entries(fingerLandmarks)) {
-                                const color = fingerColors[finger];
-                                indices.forEach(index => {
-                                    drawLandmarks(canvasCtx, [landmarks[index]], {
-                                        color: color,
-                                        fillColor: color,
-                                        lineWidth: 1,
-                                        radius: 3
-                                    });
-                                });
-                            }
-                            
-                            // Draw prediction
-                            drawPrediction(landmarks);
-                            
-                            // Send landmarks to Python for prediction
-                            window.parent.postMessage({
-                                type: 'hand_landmarks',
-                                landmarks: landmarks
-                            }, '*');
-                        } else {
-                            showDebug('No hand detected');
-                        }
-                        canvasCtx.restore();
-                    } catch (error) {
-                        showDebug('Error in onResults: ' + error.message);
-                    }
-                }
-                
-                const hands = new Hands({locateFile: (file) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
-                }});
-                
-                hands.setOptions({
-                    maxNumHands: 1,
-                    modelComplexity: 1,
-                    minDetectionConfidence: 0.5,
-                    minTrackingConfidence: 0.5
-                });
-                
-                hands.onResults(onResults);
-                
-                async function startCamera() {
-                    try {
-                        showDebug('Initializing camera...');
-                        const stream = await navigator.mediaDevices.getUserMedia({
-                            video: {
-                                facingMode: "user",
-                                width: 640,
-                                height: 480
-                            }
-                        });
-                        
-                        videoElement.srcObject = stream;
-                        showDebug('Camera initialized, waiting for video to play...');
-                        
-                        videoElement.onloadedmetadata = () => {
-                            showDebug('Video metadata loaded');
-                            videoElement.play().then(() => {
-                                showDebug('Video playing, starting hand detection...');
-                                // Start continuous frame processing
-                                function processFrame() {
-                                    try {
-                                        if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                                            hands.send({image: videoElement});
-                                        }
-                                        requestAnimationFrame(processFrame);
-                                    } catch (error) {
-                                        showDebug('Error in processFrame: ' + error.message);
-                                    }
-                                }
-                                processFrame();
-                            }).catch(error => {
-                                showDebug('Error playing video: ' + error.message);
-                            });
-                        };
-                        
-                    } catch (err) {
-                        showDebug('Camera error: ' + err.message);
-                    }
-                }
-                
-                // Function to update prediction display
-                window.updatePrediction = function(label, confidence) {
-                    showDebug(`Received prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
-                    currentPrediction = { label, confidence };
-                };
-                
-                showDebug('Starting camera...');
-                startCamera();
-            </script>
-        """, height=500)
+    try:
+        # Initialize video capture
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
-        # Handle landmark data from JavaScript and make predictions
-        st.components.v1.html(
-            """
-            <script>
-                window.addEventListener('message', function(event) {
-                    if (event.data.type === 'hand_landmarks') {
-                        const landmarks = event.data.landmarks;
-                        window.streamlit.setComponentValue({
-                            type: 'landmarks',
-                            data: landmarks
-                        });
-                    }
-                });
-            </script>
-            """,
-            height=0
+        # Create placeholders for video feed and prediction text
+        frame_placeholder = st.empty()
+        prediction_placeholder = st.empty()
+        
+        # Initialize MediaPipe Hands
+        mp_hands = mp.solutions.hands
+        mp_drawing = mp.solutions.drawing_utils
+        mp_drawing_styles = mp.solutions.drawing_styles
+        
+        hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         
-        # Process landmarks and update predictions
-        if st.session_state.get('component_value'):
-            try:
-                landmarks_data = st.session_state.component_value['data']
-                # Create flattened array of landmarks
-                landmarks_flat = []
-                for l in landmarks_data:
-                    landmarks_flat.extend([l['x'], l['y'], l['z']])
-                landmarks = np.array(landmarks_flat)
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                st.error("Failed to capture video frame")
+                break
                 
-                # Make prediction
-                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                confidence = float(np.max(prediction[0]))
-                
-                # Send prediction back to JavaScript
-                st.components.v1.html(
-                    f"""
-                    <script>
-                        window.parent.updatePrediction('{predicted_class}', {confidence});
-                    </script>
-                    """,
-                    height=0
-                )
-            except Exception as e:
-                print(f"Prediction error: {str(e)}")
-    else:
-        FRAME_WINDOW = st.empty()
-        while True:
-            try:
-                if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
-                    break
-
-                ret, frame = st.session_state.cap.read()
-                if not ret:
-                    break
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Process frame with hand tracker
-                results = st.session_state.hand_tracker.process(frame_rgb)
-                
-                if results.multi_hand_landmarks:
-                    for hand_landmarks in results.multi_hand_landmarks:
-                        mp_drawing.draw_landmarks(
-                            frame_rgb,
-                            hand_landmarks,
-                            mp_hands.HAND_CONNECTIONS,
-                            mp_drawing_styles.get_default_hand_landmarks_style(),
-                            mp_drawing_styles.get_default_hand_connections_style()
-                        )
-                        
-                        # Get landmarks and make prediction
-                        landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                        prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+            # Flip the frame horizontally for a later selfie-view display
+            frame = cv2.flip(frame, 1)
+            
+            # Convert the BGR image to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Process the frame and detect hands
+            results = hands.process(frame_rgb)
+            
+            # Draw hand landmarks
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    # Draw landmarks with custom style
+                    mp_drawing.draw_landmarks(
+                        frame_rgb,
+                        hand_landmarks,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                        mp_drawing_styles.get_default_hand_connections_style()
+                    )
+                    
+                    # Get landmarks for prediction
+                    landmarks = []
+                    for point in hand_landmarks.landmark:
+                        landmarks.extend([point.x, point.y, point.z])
+                    
+                    # Make prediction if model is loaded
+                    if st.session_state.model is not None:
+                        landmarks = np.array(landmarks).reshape(1, -1)
+                        prediction = st.session_state.model.predict(landmarks, verbose=0)
                         predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
                         confidence = np.max(prediction[0])
-
-                        # Draw prediction on frame
-                        h, w, _ = frame_rgb.shape
-                        coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
-                        x_min = max(0, min(x for x, y in coords) - 20)
-                        y_min = max(0, min(y for x, y in coords) - 20)
-                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
-                                  (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                                  0.9, (0, 255, 0), 2)
-
-                # Display the frame
-                FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
-                time.sleep(0.033)  # Cap at ~30 FPS
-                
-            except Exception as e:
-                st.error(f"Camera error: {str(e)}")
+                        
+                        # Display prediction
+                        prediction_text = f"Prediction: {predicted_class} ({confidence:.2%})"
+                        prediction_placeholder.text(prediction_text)
+                        
+                        # Add prediction text to frame
+                        cv2.putText(
+                            frame_rgb,
+                            prediction_text,
+                            (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1,
+                            (0, 255, 0),
+                            2
+                        )
+            
+            # Display the frame
+            frame_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
+            
+            # Check if we should stop the camera feed
+            if not st.session_state.camera_active:
                 break
+                
+    except Exception as e:
+        st.error(f"Error in camera feed: {str(e)}")
+    finally:
+        # Clean up
+        if 'cap' in locals():
+            cap.release()
+        if 'hands' in locals():
+            hands.close()
 
 def get_button_style(active):
     return f"""
