@@ -249,11 +249,13 @@ def run_camera_feed():
         mp_hands = mp.solutions.hands
         mp_drawing = mp.solutions.drawing_utils
         mp_drawing_styles = mp.solutions.drawing_styles
+
+        # Configure MediaPipe with more sensitive detection
         hands = mp_hands.Hands(
-            static_image_mode=False,
+            static_image_mode=True,  # Set to True for better accuracy
             max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_detection_confidence=0.3,  # Lower threshold for better detection
+            min_tracking_confidence=0.3
         )
 
         # Create a container for the video feed
@@ -268,23 +270,44 @@ def run_camera_feed():
                 img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 
-                # Convert BGR to RGB
+                # Convert BGR to RGB for MediaPipe
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # To improve detection, process the image
+                rgb_frame = cv2.flip(rgb_frame, 1)  # Mirror the image
                 
                 # Process frame with MediaPipe
                 results = hands.process(rgb_frame)
                 
-                # Draw hand landmarks
+                # Add debug info
+                debug_text = "No hands detected"
+                
+                # Draw hand landmarks with custom settings
                 if results.multi_hand_landmarks:
+                    debug_text = f"Detected {len(results.multi_hand_landmarks)} hand(s)"
                     for hand_landmarks in results.multi_hand_landmarks:
+                        # Draw skeleton
                         mp_drawing.draw_landmarks(
                             rgb_frame,
                             hand_landmarks,
                             mp_hands.HAND_CONNECTIONS,
-                            mp_drawing_styles.get_default_hand_landmarks_style(),
-                            mp_drawing_styles.get_default_hand_connections_style()
+                            landmark_drawing_spec=mp_drawing.DrawingSpec(
+                                color=(0, 255, 0),  # Green color
+                                thickness=2,
+                                circle_radius=2
+                            ),
+                            connection_drawing_spec=mp_drawing.DrawingSpec(
+                                color=(255, 255, 255),  # White color
+                                thickness=2
+                            )
                         )
                         
+                        # Draw colored dots for each landmark
+                        for id, landmark in enumerate(hand_landmarks.landmark):
+                            height, width, _ = rgb_frame.shape
+                            cx, cy = int(landmark.x * width), int(landmark.y * height)
+                            cv2.circle(rgb_frame, (cx, cy), 5, (255, 0, 0), cv2.FILLED)  # Blue dots
+                            
                         # Get hand landmarks for prediction
                         landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
                         
@@ -296,6 +319,8 @@ def run_camera_feed():
                             predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
                             confidence = np.max(prediction)
                             
+                            debug_text += f" - Predicted: {predicted_class} ({confidence:.2f})"
+                            
                             # Draw prediction text
                             cv2.putText(
                                 rgb_frame,
@@ -303,19 +328,30 @@ def run_camera_feed():
                                 (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX,
                                 1,
-                                (255, 255, 255),
+                                (0, 255, 0),  # Green text
                                 2
                             )
                 
-                # Convert back to BGR for display
-                frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                # Draw debug text
+                cv2.putText(
+                    rgb_frame,
+                    debug_text,
+                    (10, rgb_frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),  # White text
+                    1
+                )
                 
                 # Display the processed frame
                 with video_container:
-                    st.image(frame, channels="BGR")
+                    st.image(rgb_frame, channels="RGB")  # Note: Using RGB since we're already in RGB colorspace
             
             except Exception as e:
                 st.error(f"Error processing frame: {str(e)}")
+                st.error(f"Error details: {type(e).__name__}")
+                import traceback
+                st.error(traceback.format_exc())
         
         # Clean up
         hands.close()
