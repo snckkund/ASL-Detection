@@ -6,6 +6,7 @@ import time
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import platform
 import mediapipe as mp
 
 from src.model import create_landmark_model, load_trained_model, ASLEnsemble
@@ -19,40 +20,21 @@ from src.config import (
 )
 from src.hand_tracking import HandTracker
 
-# Detect environment
-IS_HUGGINGFACE = "SPACE_ID" in os.environ
-IS_LOCAL = not IS_HUGGINGFACE
-
-# Initialize MediaPipe components
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
+
+# Initialize MediaPipe components
 hand_tracker = HandTracker(confidence_threshold=0.7)
-
-# Define paths
-CHART_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'chart.jpg')
-
-@st.cache_resource
-def load_cached_model():
-    """Load and cache the model to prevent reloading"""
-    if os.path.exists(MODEL_PATH):
-        with st.spinner('Loading ASL Detection model... This may take a few moments.'):
-            if IS_HUGGINGFACE:
-                # Optimize for Hugging Face environment
-                os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-                tf.config.set_visible_devices([], 'GPU')
-            # Load model with reduced memory usage
-            model = load_trained_model(MODEL_PATH)
-            return model
-    return None
 
 def init_session_state():
     if 'mode' not in st.session_state:
-        st.session_state.mode = 'camera'  # Default to camera for all environments
+        st.session_state.mode = 'camera'
     if 'camera_active' not in st.session_state:
         st.session_state.camera_active = False
     if 'model' not in st.session_state:
-        st.session_state.model = load_cached_model()
+        if os.path.exists(MODEL_PATH):
+            st.session_state.model = load_trained_model(MODEL_PATH)
     if 'hand_tracker' not in st.session_state:
         st.session_state.hand_tracker = mp_hands.Hands(
             static_image_mode=False,
@@ -60,126 +42,71 @@ def init_session_state():
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
-    if 'camera_permission_requested' not in st.session_state:
-        st.session_state.camera_permission_requested = False
 
 def check_camera_permission():
-    """Check if camera access is allowed"""
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            return False
-        cap.release()
-        return True
-    except Exception as e:
-        print(f"Camera access error: {str(e)}")
+    # Try to access the camera
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Camera access denied. Please allow camera access to use this feature.")
         return False
+    cap.release()
+    return True
 
 def request_camera_access():
-    """Request camera access from browser"""
-    if st.session_state.get('camera_permission_requested'):
-        return
-        
-    st.session_state.camera_permission_requested = True
     st.components.v1.html("""
         <div id="camera_permission">Requesting camera access...</div>
         <script>
-            let videoElement = null;
-            
             async function requestCamera() {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ 
-                        video: {
-                            width: { ideal: 640 },
-                            height: { ideal: 480 },
-                            frameRate: { ideal: 30 }
-                        }
-                    });
-                    
-                    // Create video element if it doesn't exist
-                    if (!videoElement) {
-                        videoElement = document.createElement('video');
-                        videoElement.style.display = 'none';
-                        document.body.appendChild(videoElement);
-                    }
-                    
-                    // Connect stream to video element
-                    videoElement.srcObject = stream;
-                    await videoElement.play();
-                    
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                     document.getElementById('camera_permission').innerText = 'Camera access granted!';
-                    window.streamActive = true;
+                    // Stop the stream since OpenCV will handle the camera
+                    stream.getTracks().forEach(track => track.stop());
                 } catch (err) {
                     document.getElementById('camera_permission').innerText = 'Camera access denied: ' + err.message;
                     console.error('Error:', err);
-                    window.streamActive = false;
                 }
             }
             requestCamera();
         </script>
     """, height=50)
-    time.sleep(1)  # Brief delay for permission dialog
+    time.sleep(2)  # Wait for permission dialog
 
-def initialize_browser_camera():
-    """Initialize camera in browser environment"""
+def initialize_camera():
+    """Initialize primary camera only."""
+    if 'cap' in st.session_state and st.session_state.cap is not None:
+        st.session_state.cap.release()  # Release any existing camera
+        
     try:
-        st.components.v1.html("""
-            <div style="display: none;">
-                <video id="camera" autoplay playsinline></video>
-                <canvas id="canvas"></canvas>
-            </div>
-            <script>
-                const video = document.getElementById('camera');
-                const canvas = document.getElementById('canvas');
-                const context = canvas.getContext('2d');
-                
-                async function startCamera() {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({
-                            video: {
-                                width: 640,
-                                height: 480,
-                                frameRate: 30
-                            }
-                        });
-                        video.srcObject = stream;
-                        await video.play();
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        
-                        // Store stream in window object for later access
-                        window.cameraStream = stream;
-                        
-                        // Start frame capture loop
-                        function captureFrame() {
-                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                                const imageData = canvas.toDataURL('image/jpeg');
-                                window.parent.postMessage({type: 'video_frame', data: imageData}, '*');
-                            }
-                            requestAnimationFrame(captureFrame);
-                        }
-                        captureFrame();
-                        
-                        return true;
-                    } catch (err) {
-                        console.error('Error:', err);
-                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
-                    }
-                }
-                
-                // Start camera when component loads
-                startCamera().then(success => {
-                    window.cameraInitialized = success;
-                });
-            </script>
-        """)
-        # Wait briefly for camera initialization
-        time.sleep(2)
-        return True
+        cap = cv2.VideoCapture(0)  # Only try primary camera
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            return cap
+        return None
     except Exception as e:
         st.error(f"Camera initialization error: {str(e)}")
-        return False
+        return None
+
+def get_available_cameras():
+    """Test available camera indices and return working ones."""
+    available_cameras = {}
+    
+    # Try indices 0 to 10
+    for i in range(10):
+        try:
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    # Add camera to available list
+                    available_cameras[i] = f"Camera {i}"
+                cap.release()
+        except:
+            continue
+    
+    return available_cameras
 
 def cleanup():
     """Clean up camera resources safely"""
@@ -192,184 +119,132 @@ def cleanup():
             try:
                 st.session_state.hands.close()
             except:
-                pass
+                pass  # Ignore MediaPipe close errors
             st.session_state.hands = None
             
         st.session_state.camera_active = False
     except Exception as e:
         st.error(f"Error during cleanup: {str(e)}")
 
+def get_sample_image(sign):
+    # Get a sample image from the training dataset
+    train_dir = "dataset/asl_alphabet_train/asl_alphabet_train"
+    sign_dir = os.path.join(train_dir, sign)
+    if os.path.exists(sign_dir):
+        # Get first image from the directory
+        images = [f for f in os.listdir(sign_dir) if f.endswith(('.jpg', '.jpeg', '.png'))]
+        if images:
+            return os.path.join(sign_dir, images[0])
+    return None
+
 def show_reference_chart():
-    """Display ASL reference chart"""
+    # Create columns for the reference chart
+    cols = st.columns(6)  # 6 columns for compact display
+    
+    # Group the signs into categories
+    alphabets = [chr(i) for i in range(65, 91)]  # A to Z
+    special = ['del', 'nothing', 'space']
+    all_signs = alphabets + special
+    
+    # Display signs in a grid layout
+    for idx, sign in enumerate(all_signs):
+        col_idx = idx % 6
+        with cols[col_idx]:
+            st.write(f"**{sign}**")
+            # Get and display sample image
+            img_path = get_sample_image(sign)
+            if img_path:
+                img = Image.open(img_path)
+                # Resize image to make it smaller and consistent
+                img = img.resize((100, 100))
+                st.image(img, use_container_width=True)
+
+def is_running_locally():
+    """Check if the app is running locally"""
     try:
-        # Load and display the reference chart image
-        if os.path.exists(CHART_PATH):
-            image = Image.open(CHART_PATH)
-            # Resize image to be more compact while maintaining aspect ratio
-            width, height = image.size
-            new_width = 600  # Set a smaller fixed width
-            new_height = int((new_width * height) / width)
-            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Create a container with custom styling
-            with st.container():
-                st.markdown("""
-                    <style>
-                    .reference-chart {
-                        border: 1px solid #ddd;
-                        border-radius: 5px;
-                        padding: 5px;  # Reduced padding
-                        background-color: white;
-                        margin-bottom: 10px;  # Reduced margin
-                        box-shadow: none;  /* Remove white bar effect */
-                    }
-                    </style>
-                    <div class="reference-chart">
-                    """, unsafe_allow_html=True)
-                st.image(image, use_container_width=True, caption="ASL Reference Chart")
-                st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.error("Reference chart not found. Please check the assets directory.")
-    except Exception as e:
-        st.error(f"Error loading reference chart: {str(e)}")
+        # Check for HuggingFace Space environment
+        if "SPACE_ID" in os.environ:
+            return False
+        return True
+    except:
+        return True
 
 def stop_camera():
-    """Stop and release camera resources"""
     if 'cap' in st.session_state:
-        st.session_state.cap.release()
+        st.session_state.cap.release()  # Release the camera
         st.session_state['camera_active'] = False
         st.success('Camera stopped.')
 
-def run_camera_feed():
-    """Run the camera feed continuously"""
+def process_frame(frame, hand_tracker, model):
+    """Process a single frame with hand tracking and model prediction."""
     try:
-        # Initialize video capture
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # Convert the frame to RGB for MediaPipe
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = hand_tracker.process(frame_rgb)
         
-        # Create placeholders for video feed and prediction text
-        frame_placeholder = st.empty()
-        prediction_placeholder = st.empty()
-        
-        # Initialize MediaPipe Hands
-        mp_hands = mp.solutions.hands
-        mp_drawing = mp.solutions.drawing_utils
-        mp_drawing_styles = mp.solutions.drawing_styles
-        
-        hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Failed to capture video frame")
-                break
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # Draw landmarks
+                mp_drawing.draw_landmarks(
+                    frame_rgb,
+                    hand_landmarks,
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                    mp_drawing_styles.get_default_hand_connections_style()
+                )
                 
-            # Flip the frame horizontally for a later selfie-view display
-            frame = cv2.flip(frame, 1)
-            
-            # Convert the BGR image to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Process the frame and detect hands
-            results = hands.process(frame_rgb)
-            
-            # Draw hand landmarks
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    # Draw landmarks with custom style
-                    mp_drawing.draw_landmarks(
-                        frame_rgb,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                        mp_drawing_styles.get_default_hand_connections_style()
-                    )
-                    
-                    # Get landmarks for prediction
-                    landmarks = []
-                    for point in hand_landmarks.landmark:
-                        landmarks.extend([point.x, point.y, point.z])
-                    
-                    # Make prediction if model is loaded
-                    if st.session_state.model is not None:
-                        landmarks = np.array(landmarks).reshape(1, -1)
-                        prediction = st.session_state.model.predict(landmarks, verbose=0)
-                        predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                        confidence = np.max(prediction[0])
-                        
-                        # Display prediction
-                        prediction_text = f"Prediction: {predicted_class} ({confidence:.2%})"
-                        prediction_placeholder.text(prediction_text)
-                        
-                        # Add prediction text to frame
-                        cv2.putText(
-                            frame_rgb,
-                            prediction_text,
-                            (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (0, 255, 0),
-                            2
-                        )
-            
-            # Display the frame
-            frame_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
-            
-            # Check if we should stop the camera feed
-            if not st.session_state.camera_active:
-                break
+                # Get prediction
+                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                prediction = model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                confidence = np.max(prediction[0])
                 
+                # Add prediction text
+                h, w = frame_rgb.shape[:2]
+                x_min = int(min(l.x for l in hand_landmarks.landmark) * w)
+                y_min = int(min(l.y for l in hand_landmarks.landmark) * h)
+                cv2.putText(
+                    frame_rgb,
+                    f"{predicted_class} ({confidence:.2%})",
+                    (max(0, x_min - 10), max(20, y_min - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 255, 0),
+                    2
+                )
+        
+        return frame_rgb, results.multi_hand_landmarks is not None
     except Exception as e:
-        st.error(f"Error in camera feed: {str(e)}")
-    finally:
-        # Clean up
-        if 'cap' in locals():
-            cap.release()
-        if 'hands' in locals():
-            hands.close()
-
-def get_button_style(active):
-    return f"""
-    <style>
-    div.stButton > button {{
-        background-color: {'#00acee' if active else '#ffffff'};
-        color: {'white' if active else 'black'};
-        width: 100%;
-        padding: 10px;
-        border: {'none' if active else '1px solid #ddd'};
-        border-radius: 5px;
-    }}
-    </style>
-    """
+        st.error(f"Error processing frame: {str(e)}")
+        return frame_rgb, False
 
 def main():
+    if not check_camera_permission():
+        exit()  # Exit if permission is not granted
+
     st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
     
     if 'current_mode' not in st.session_state:
-        st.session_state.current_mode = "Camera"  # Default to camera for all environments
+        st.session_state.current_mode = "Camera"
+
+    if 'camera_index' not in st.session_state:
+        st.session_state.camera_index = 0
 
     # Sidebar
     st.sidebar.title("Navigation")
     
-    # Show appropriate pages based on environment
-    if IS_LOCAL:
+    # Show all pages when running locally, only Test Model when deployed
+    if is_running_locally():
         available_pages = ["Dataset Info", "Train Model", "Test Model"]
     else:
         available_pages = ["Test Model"]
-        st.sidebar.info("⚡ Running on Hugging Face")
     
     page = st.sidebar.radio("Go to", available_pages)
 
-    if page == "Dataset Info" and IS_LOCAL:
+    if page == "Dataset Info":
         dataset_info_page()
-    elif page == "Train Model" and IS_LOCAL:
+    elif page == "Train Model" and is_running_locally():
         train_page()
     else:
         test_page()
@@ -546,16 +421,34 @@ def train_page():
 def test_page():
     st.title("Real-time ASL Detection")
     
-    if st.session_state.model is None:
-        st.error("Model not found. Please train the model first.")
-        return
-    
-    # Add reference chart in a smaller expander
-    with st.expander("📖 ASL Reference Chart", expanded=False):
-        show_reference_chart()
+    if 'model' not in st.session_state:
+        if os.path.exists(MODEL_PATH):
+            st.session_state.model = load_trained_model(MODEL_PATH)
+        else:
+            st.error("Model not found. Please train the model first.")
+            return
 
+    # Add reference chart in an expander
+    with st.expander("📖 ASL Reference Chart", expanded=True):
+        show_reference_chart()
+    
     # Mode selection with toggle buttons
     col1, col2 = st.columns(2)
+    
+    # Style the buttons to look like toggle switches
+    def get_button_style(active):
+        return f"""
+        <style>
+        div.stButton > button {{
+            background-color: {'#00acee' if active else '#ffffff'};
+            color: {'white' if active else 'black'};
+            width: 100%;
+            padding: 10px;
+            border: {'none' if active else '1px solid #ddd'};
+            border-radius: 5px;
+        }}
+        </style>
+        """
     
     with col1:
         st.markdown(get_button_style(st.session_state.get('mode') == 'camera'), unsafe_allow_html=True)
@@ -571,43 +464,68 @@ def test_page():
             cleanup()
             st.rerun()
 
-    st.markdown("---")
+    st.markdown("---")  # Add separator
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
         # Camera controls
         control_col1, control_col2 = st.columns(2)
+        FRAME_WINDOW = st.empty()
         
         with control_col1:
             if not st.session_state.get('camera_active', False):
                 if st.button('Start Camera'):
-                    if IS_HUGGINGFACE:
+                    request_camera_access()  # Request browser permission first
+                    time.sleep(1)  # Give time for browser permission dialog
+                    
+                    # Initialize camera
+                    if 'cap' in st.session_state and st.session_state.cap is not None:
+                        st.session_state.cap.release()
+                    
+                    st.session_state.cap = cv2.VideoCapture(0)
+                    if st.session_state.cap.isOpened():
+                        st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                         st.session_state['camera_active'] = True
                         st.success("Camera initialized successfully!")
                     else:
-                        if 'cap' in st.session_state and st.session_state.cap is not None:
-                            st.session_state.cap.release()
-                        
-                        st.session_state.cap = cv2.VideoCapture(0)
-                        if st.session_state.cap.isOpened():
-                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                            st.session_state.cap.set(cv2.CAP_PROP_FPS, 30)
-                            st.session_state['camera_active'] = True
-                            st.success("Camera initialized successfully!")
-                        else:
-                            st.error("Could not initialize camera. Please check permissions and try again.")
+                        st.error("Could not initialize camera. Please check permissions.")
 
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
-                    cleanup()
+                    stop_camera()
                     st.rerun()
 
-        # Run camera feed if active
-        if st.session_state.get('camera_active', False):
-            run_camera_feed()
-
+        # Main camera loop
+        if st.session_state.get('camera_active', False) and hasattr(st.session_state, 'cap'):
+            FRAME_WINDOW = st.empty()
+            try:
+                while True:
+                    ret, frame = st.session_state.cap.read()
+                    if not ret:
+                        st.error("Failed to read from camera")
+                        cleanup()
+                        break
+                    
+                    # Process frame
+                    processed_frame, hand_detected = process_frame(
+                        frame,
+                        st.session_state.hand_tracker,
+                        st.session_state.model
+                    )
+                    
+                    # Display the frame
+                    FRAME_WINDOW.image(processed_frame, channels="RGB", use_container_width=True)
+                    
+                    # Add a small delay to control frame rate
+                    time.sleep(0.03)  # Approximately 30 FPS
+                    
+            except Exception as e:
+                st.error(f"Camera error: {str(e)}")
+                cleanup()
+            finally:
+                cleanup()
     # Upload Mode
     else:
         uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
@@ -642,7 +560,7 @@ def test_page():
                             mp_drawing_styles.get_default_hand_landmarks_style(),
                             mp_drawing_styles.get_default_hand_connections_style()
                         )
-                        
+                    
                         # Extract landmarks and predict
                         landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
                         prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
