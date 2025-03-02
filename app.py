@@ -245,10 +245,21 @@ def run_camera_feed():
     if IS_HUGGINGFACE:
         # For browser environment, use JavaScript with MediaPipe
         st.components.v1.html("""
-            <div>
+            <div style="position: relative;">
                 <video id="camera" autoplay playsinline style="display: none;"></video>
                 <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
-                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white;"></div>
+                <div id="prediction" style="
+                    position: absolute;
+                    top: 20px;
+                    left: 20px;
+                    background: rgba(0, 0, 0, 0.7);
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 5px;
+                    font-size: 20px;
+                    font-weight: bold;
+                    z-index: 1000;
+                "></div>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -256,9 +267,8 @@ def run_camera_feed():
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
-                const debugElement = document.getElementById('debug');
+                const predictionElement = document.getElementById('prediction');
                 const canvasCtx = canvasElement.getContext('2d');
-                let currentPrediction = null;
 
                 // Define colors for different fingers
                 const fingerColors = {
@@ -278,48 +288,23 @@ def run_camera_feed():
                     pinky: [17, 18, 19, 20]
                 };
                 
-                function drawPrediction() {
-                    if (!currentPrediction || !canvasElement.width) return;
-                    
-                    const {label, confidence} = currentPrediction;
-                    debugElement.textContent = `Current Prediction: ${label} (${(confidence * 100).toFixed(1)}%)`;
-                    
-                    // Draw text with background
-                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                    const padding = 10;
-                    const fontSize = 24;
-                    canvasCtx.font = `${fontSize}px Arial`;
-                    
-                    // Position at top-left corner for now
-                    const x = 10;
-                    const y = 30;
-                    
-                    // Draw background
-                    const textWidth = canvasCtx.measureText(text).width;
-                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-                    canvasCtx.fillRect(x - padding, y - fontSize - padding, 
-                                     textWidth + padding * 2, fontSize + padding * 2);
-                    
-                    // Draw text
-                    canvasCtx.fillStyle = 'white';
-                    canvasCtx.fillText(text, x, y);
-                }
-                
                 function onResults(results) {
-                    if (!canvasElement.width) {
-                        canvasElement.width = videoElement.videoWidth;
-                        canvasElement.height = videoElement.videoHeight;
-                    }
+                    // Set canvas size maintaining aspect ratio
+                    const aspectRatio = videoElement.videoHeight / videoElement.videoWidth;
+                    canvasElement.width = 640;
+                    canvasElement.height = canvasElement.width * aspectRatio;
                     
                     canvasCtx.save();
                     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    
+                    // Draw video maintaining aspect ratio
                     canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
                     
                     if (results.multiHandLandmarks) {
                         for (const landmarks of results.multiHandLandmarks) {
                             // Draw connections
                             drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
-                                        {color: '#FFFFFF', lineWidth: 3});
+                                        {color: '#FFFFFF', lineWidth: 2});
                             
                             // Draw landmarks with different colors for each finger
                             for (const [finger, indices] of Object.entries(fingerLandmarks)) {
@@ -328,8 +313,8 @@ def run_camera_feed():
                                     drawLandmarks(canvasCtx, [landmarks[index]], {
                                         color: color,
                                         fillColor: color,
-                                        lineWidth: 2,
-                                        radius: 5
+                                        lineWidth: 1,
+                                        radius: 3
                                     });
                                 });
                             }
@@ -341,9 +326,6 @@ def run_camera_feed():
                             }, '*');
                         }
                     }
-                    
-                    // Draw prediction
-                    drawPrediction();
                     canvasCtx.restore();
                 }
                 
@@ -373,9 +355,6 @@ def run_camera_feed():
                         videoElement.srcObject = stream;
                         await videoElement.play();
                         
-                        // Start hand detection
-                        await hands.send({image: videoElement});
-                        
                         // Start continuous frame processing
                         function processFrame() {
                             if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
@@ -393,8 +372,8 @@ def run_camera_feed():
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
-                    console.log('Received prediction:', label, confidence);
-                    currentPrediction = { label, confidence };
+                    predictionElement.textContent = `Predicted: ${label} (${(confidence * 100).toFixed(1)}%)`;
+                    predictionElement.style.display = 'block';
                 };
                 
                 startCamera();
@@ -408,7 +387,6 @@ def run_camera_feed():
                 window.addEventListener('message', function(event) {
                     if (event.data.type === 'hand_landmarks') {
                         const landmarks = event.data.landmarks;
-                        // Send landmarks to Python for prediction
                         window.streamlit.setComponentValue({
                             type: 'landmarks',
                             data: landmarks
@@ -424,27 +402,28 @@ def run_camera_feed():
         if st.session_state.get('component_value'):
             try:
                 landmarks_data = st.session_state.component_value['data']
-                landmarks = np.array([[l['x'], l['y'], l['z']] for l in landmarks_data]).flatten()
+                # Create flattened array of landmarks
+                landmarks_flat = []
+                for l in landmarks_data:
+                    landmarks_flat.extend([l['x'], l['y'], l['z']])
+                landmarks = np.array(landmarks_flat)
+                
+                # Make prediction
                 prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                 predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                confidence = float(np.max(prediction[0]))  # Convert to float for JSON serialization
-                
-                # Debug print
-                print(f"Making prediction: {predicted_class} ({confidence:.2%})")
+                confidence = float(np.max(prediction[0]))
                 
                 # Send prediction back to JavaScript
                 st.components.v1.html(
                     f"""
                     <script>
-                        console.log('Updating prediction:', '{predicted_class}', {confidence});
                         window.updatePrediction('{predicted_class}', {confidence});
                     </script>
                     """,
                     height=0
                 )
             except Exception as e:
-                st.error(f"Prediction error: {str(e)}")
-                print(f"Prediction error details: {str(e)}")
+                print(f"Prediction error: {str(e)}")
     else:
         FRAME_WINDOW = st.empty()
         while True:
