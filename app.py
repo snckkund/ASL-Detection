@@ -244,60 +244,7 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # For Hugging Face environment, use Python MediaPipe
-        video_html = st.components.v1.html("""
-            <div style="position: relative; width: 640px; height: 480px;">
-                <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
-                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
-            </div>
-            <script>
-                const videoElement = document.getElementById('camera');
-                const canvasElement = document.getElementById('output_canvas');
-                const canvasCtx = canvasElement.getContext('2d');
-
-                // Set initial dimensions
-                canvasElement.width = 640;
-                canvasElement.height = 480;
-
-                async function startCamera() {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({
-                            video: {
-                                facingMode: "user",
-                                width: 640,
-                                height: 480
-                            }
-                        });
-                        
-                        videoElement.srcObject = stream;
-                        videoElement.onloadedmetadata = () => {
-                            videoElement.play().then(() => {
-                                // Start continuous frame processing
-                                function processFrame() {
-                                    if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                                        // Draw video frame to canvas
-                                        canvasCtx.drawImage(videoElement, 0, 0);
-                                        // Send frame data to Python
-                                        const imageData = canvasElement.toDataURL('image/jpeg', 0.8);
-                                        window.streamlit.setComponentValue({
-                                            type: 'video_frame',
-                                            data: imageData
-                                        });
-                                    }
-                                    requestAnimationFrame(processFrame);
-                                }
-                                processFrame();
-                            });
-                        };
-                    } catch (err) {
-                        console.error('Camera error:', err);
-                    }
-                }
-                
-                startCamera();
-            </script>
-        """, height=500)
-
+        # For Hugging Face environment, use Python MediaPipe with Streamlit camera
         # Initialize MediaPipe Hands
         mp_hands = mp.solutions.hands
         mp_drawing = mp.solutions.drawing_utils
@@ -309,82 +256,66 @@ def run_camera_feed():
             min_tracking_confidence=0.5
         )
 
-        # Create placeholder for video frame
-        frame_placeholder = st.empty()
-        
         # Create a container for the video feed
         video_container = st.container()
         
-        # Use a session state variable to track frame updates
-        if 'frame_count' not in st.session_state:
-            st.session_state.frame_count = 0
-            
-        while True:
+        # Use Streamlit's camera input
+        camera = st.camera_input("Camera Feed")
+        
+        if camera is not None:
             try:
-                # Get frame data from JavaScript
-                frame_data = st.session_state.get('video_frame')
-                if frame_data and frame_data.get('data'):
-                    # Convert base64 image to numpy array
-                    img_str = frame_data['data'].split(',')[1]
-                    img_bytes = base64.b64decode(img_str)
-                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-                    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                    
-                    # Convert BGR to RGB
-                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Process frame with MediaPipe
-                    results = hands.process(rgb_frame)
-                    
-                    # Draw hand landmarks
-                    if results.multi_hand_landmarks:
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            mp_drawing.draw_landmarks(
-                                rgb_frame,
-                                hand_landmarks,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_drawing_styles.get_default_hand_landmarks_style(),
-                                mp_drawing_styles.get_default_hand_connections_style()
-                            )
-                            
-                            # Get hand landmarks for prediction
-                            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
-                            
-                            # Make prediction if model is loaded
-                            if st.session_state.model:
-                                # Prepare landmarks for prediction
-                                landmarks_flat = landmarks.flatten()
-                                prediction = st.session_state.model.predict(landmarks_flat.reshape(1, -1))
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
-                                confidence = np.max(prediction)
-                                
-                                # Draw prediction text
-                                cv2.putText(
-                                    rgb_frame,
-                                    f"{predicted_class} ({confidence:.2f})",
-                                    (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1,
-                                    (255, 255, 255),
-                                    2
-                                )
-                    
-                    # Convert back to BGR for display
-                    frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                    
-                    # Update frame count to force refresh
-                    st.session_state.frame_count += 1
-                    
-                    # Display the frame in the container
-                    with video_container:
-                        st.image(frame, channels="BGR", caption=f"Frame {st.session_state.frame_count}")
-                    
-                    # Rerun to update the UI
-                    st.experimental_rerun()
+                # Convert the image from bytes to numpy array
+                img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 
+                # Convert BGR to RGB
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Process frame with MediaPipe
+                results = hands.process(rgb_frame)
+                
+                # Draw hand landmarks
+                if results.multi_hand_landmarks:
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        mp_drawing.draw_landmarks(
+                            rgb_frame,
+                            hand_landmarks,
+                            mp_hands.HAND_CONNECTIONS,
+                            mp_drawing_styles.get_default_hand_landmarks_style(),
+                            mp_drawing_styles.get_default_hand_connections_style()
+                        )
+                        
+                        # Get hand landmarks for prediction
+                        landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+                        
+                        # Make prediction if model is loaded
+                        if st.session_state.model:
+                            # Prepare landmarks for prediction
+                            landmarks_flat = landmarks.flatten()
+                            prediction = st.session_state.model.predict(landmarks_flat.reshape(1, -1))
+                            predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
+                            confidence = np.max(prediction)
+                            
+                            # Draw prediction text
+                            cv2.putText(
+                                rgb_frame,
+                                f"{predicted_class} ({confidence:.2f})",
+                                (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1,
+                                (255, 255, 255),
+                                2
+                            )
+                
+                # Convert back to BGR for display
+                frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+                
+                # Display the processed frame
+                with video_container:
+                    st.image(frame, channels="BGR")
+            
             except Exception as e:
                 st.error(f"Error processing frame: {str(e)}")
-                break
         
         # Clean up
         hands.close()
@@ -425,7 +356,7 @@ def run_camera_feed():
                         coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
                         x_min = max(0, min(x for x, y in coords) - 20)
                         y_min = max(0, min(y for x, y in coords) - 20)
-                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
+                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.4f})",
                                   (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
                                   0.9, (0, 255, 0), 2)
 
