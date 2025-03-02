@@ -248,6 +248,7 @@ def run_camera_feed():
             <div>
                 <video id="camera" autoplay playsinline style="display: none;"></video>
                 <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
+                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white;"></div>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -255,6 +256,7 @@ def run_camera_feed():
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
+                const debugElement = document.getElementById('debug');
                 const canvasCtx = canvasElement.getContext('2d');
                 let currentPrediction = null;
 
@@ -276,10 +278,38 @@ def run_camera_feed():
                     pinky: [17, 18, 19, 20]
                 };
                 
+                function drawPrediction() {
+                    if (!currentPrediction || !canvasElement.width) return;
+                    
+                    const {label, confidence} = currentPrediction;
+                    debugElement.textContent = `Current Prediction: ${label} (${(confidence * 100).toFixed(1)}%)`;
+                    
+                    // Draw text with background
+                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                    const padding = 10;
+                    const fontSize = 24;
+                    canvasCtx.font = `${fontSize}px Arial`;
+                    
+                    // Position at top-left corner for now
+                    const x = 10;
+                    const y = 30;
+                    
+                    // Draw background
+                    const textWidth = canvasCtx.measureText(text).width;
+                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                    canvasCtx.fillRect(x - padding, y - fontSize - padding, 
+                                     textWidth + padding * 2, fontSize + padding * 2);
+                    
+                    // Draw text
+                    canvasCtx.fillStyle = 'white';
+                    canvasCtx.fillText(text, x, y);
+                }
+                
                 function onResults(results) {
-                    // Set canvas dimensions to match video
-                    canvasElement.width = videoElement.videoWidth;
-                    canvasElement.height = videoElement.videoHeight;
+                    if (!canvasElement.width) {
+                        canvasElement.width = videoElement.videoWidth;
+                        canvasElement.height = videoElement.videoHeight;
+                    }
                     
                     canvasCtx.save();
                     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
@@ -304,38 +334,6 @@ def run_camera_feed():
                                 });
                             }
                             
-                            // Draw prediction if available
-                            if (currentPrediction) {
-                                const {label, confidence} = currentPrediction;
-                                
-                                // Calculate position near the hand
-                                let minX = Infinity;
-                                let minY = Infinity;
-                                landmarks.forEach(landmark => {
-                                    minX = Math.min(minX, landmark.x * canvasElement.width);
-                                    minY = Math.min(minY, landmark.y * canvasElement.height);
-                                });
-                                
-                                // Draw background box
-                                const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
-                                const padding = 10;
-                                const fontSize = 24;
-                                canvasCtx.font = `${fontSize}px Arial`;
-                                const textMetrics = canvasCtx.measureText(text);
-                                
-                                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-                                canvasCtx.fillRect(
-                                    minX - padding,
-                                    minY - fontSize - padding * 2,
-                                    textMetrics.width + padding * 2,
-                                    fontSize + padding * 2
-                                );
-                                
-                                // Draw text
-                                canvasCtx.fillStyle = 'white';
-                                canvasCtx.fillText(text, minX, minY - padding);
-                            }
-                            
                             // Send landmarks to Python for prediction
                             window.parent.postMessage({
                                 type: 'hand_landmarks',
@@ -343,6 +341,9 @@ def run_camera_feed():
                             }, '*');
                         }
                     }
+                    
+                    // Draw prediction
+                    drawPrediction();
                     canvasCtx.restore();
                 }
                 
@@ -392,6 +393,7 @@ def run_camera_feed():
                 
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
+                    console.log('Received prediction:', label, confidence);
                     currentPrediction = { label, confidence };
                 };
                 
@@ -399,10 +401,6 @@ def run_camera_feed():
             </script>
         """, height=500)
         
-        # Add a placeholder for displaying predictions
-        if 'prediction_display' not in st.session_state:
-            st.session_state.prediction_display = st.empty()
-            
         # Handle landmark data from JavaScript and make predictions
         st.components.v1.html(
             """
@@ -429,12 +427,16 @@ def run_camera_feed():
                 landmarks = np.array([[l['x'], l['y'], l['z']] for l in landmarks_data]).flatten()
                 prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                 predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                confidence = np.max(prediction[0])
+                confidence = float(np.max(prediction[0]))  # Convert to float for JSON serialization
+                
+                # Debug print
+                print(f"Making prediction: {predicted_class} ({confidence:.2%})")
                 
                 # Send prediction back to JavaScript
                 st.components.v1.html(
                     f"""
                     <script>
+                        console.log('Updating prediction:', '{predicted_class}', {confidence});
                         window.updatePrediction('{predicted_class}', {confidence});
                     </script>
                     """,
@@ -442,7 +444,7 @@ def run_camera_feed():
                 )
             except Exception as e:
                 st.error(f"Prediction error: {str(e)}")
-                
+                print(f"Prediction error details: {str(e)}")
     else:
         FRAME_WINDOW = st.empty()
         while True:
