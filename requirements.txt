@@ -1,0 +1,7 @@
+# python 3.12
+mediapipe>=0.10.21
+numpy>=1.26.4
+opencv-python>=4.11.0.86
+streamlit>=1.42.1
+tensorflow>=2.18.0
+tqdm>=4.66.1

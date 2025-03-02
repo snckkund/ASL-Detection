@@ -1,0 +1,12 @@
+[server]
+port = 5000
+enableCORS = true
+enableXsrfProtection = false
+runOnSave = true
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[theme]
+base = "dark"
