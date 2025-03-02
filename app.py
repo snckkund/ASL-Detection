@@ -630,15 +630,20 @@ def test_page():
                 if st.button("📷 Start Camera", key="start_camera"):
                     request_camera_access()
                     
-                    # Initialize camera
-                    if 'cap' in st.session_state and st.session_state.cap is not None:
-                        st.session_state.cap.release()
-                    
-                    st.session_state.cap = initialize_camera()
-                    if st.session_state.cap is not None:
+                    # Initialize camera based on environment
+                    if IS_HUGGINGFACE:
                         st.session_state['camera_active'] = True
                         st.success("Camera initialized successfully!")
-                        st.experimental_rerun()  # Force rerun to start the camera feed
+                    else:
+                        # Local environment - use OpenCV
+                        if 'cap' in st.session_state and st.session_state.cap is not None:
+                            st.session_state.cap.release()
+                        
+                        st.session_state.cap = initialize_camera()
+                        if st.session_state.cap is not None:
+                            st.session_state['camera_active'] = True
+                            st.success("Camera initialized successfully!")
+                    st.experimental_rerun()
 
         with control_col2:
             if st.session_state.get('camera_active', False):
