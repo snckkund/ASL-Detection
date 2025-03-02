@@ -244,47 +244,37 @@ def run_camera_feed():
     if IS_HUGGINGFACE:
         # For browser environment, use JavaScript to capture frames
         st.components.v1.html("""
-            <div style="display: none;">
-                <video id="camera" autoplay playsinline></video>
-                <canvas id="canvas"></canvas>
+            <div>
+                <video id="camera" autoplay playsinline style="width: 100%; max-width: 640px; height: auto;"></video>
             </div>
-            <img id="camera_frame" style="width: 100%; max-width: 640px; height: auto;" />
             <script>
-                let video = document.getElementById('camera');
-                let canvas = document.getElementById('canvas');
-                let context = canvas.getContext('2d');
-                let frameElement = document.getElementById('camera_frame');
+                const video = document.getElementById('camera');
                 
                 async function startCamera() {
                     try {
                         const stream = await navigator.mediaDevices.getUserMedia({
                             video: {
-                                width: 640,
-                                height: 480,
-                                frameRate: 30
+                                width: { ideal: 640 },
+                                height: { ideal: 480 },
+                                frameRate: { ideal: 30 }
                             }
                         });
-                        video.srcObject = stream;
-                        await video.play();
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
                         
-                        // Continuously capture frames
-                        function captureFrame() {
-                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                                frameElement.src = canvas.toDataURL('image/jpeg');
-                            }
-                            requestAnimationFrame(captureFrame);
-                        }
-                        captureFrame();
+                        // Connect stream directly to video element
+                        video.srcObject = stream;
+                        video.play().catch(console.error);
+                        
                     } catch (err) {
-                        console.error('Error:', err);
+                        console.error('Camera error:', err);
+                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
                     }
                 }
+                
+                // Start camera when component loads
                 startCamera();
             </script>
-        """, height=480)
+        """, height=500)  # Increased height to ensure video is visible
+        
     else:
         FRAME_WINDOW = st.empty()
         while True:
@@ -532,7 +522,6 @@ def train_page():
 def test_page():
     st.title("Real-time ASL Detection")
     
-    # Load model if not already loaded
     if st.session_state.model is None:
         st.error("Model not found. Please train the model first.")
         return
@@ -543,21 +532,6 @@ def test_page():
 
     # Mode selection with toggle buttons
     col1, col2 = st.columns(2)
-    
-    # Style the buttons to look like toggle switches
-    def get_button_style(active):
-        return f"""
-        <style>
-        div.stButton > button {{
-            background-color: {'#00acee' if active else '#ffffff'};
-            color: {'white' if active else 'black'};
-            width: 100%;
-            padding: 10px;
-            border: {'none' if active else '1px solid #ddd'};
-            border-radius: 5px;
-        }}
-        </style>
-        """
     
     with col1:
         st.markdown(get_button_style(st.session_state.get('mode') == 'camera'), unsafe_allow_html=True)
@@ -573,7 +547,7 @@ def test_page():
             cleanup()
             st.rerun()
 
-    st.markdown("---")  # Add separator
+    st.markdown("---")
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
@@ -584,7 +558,6 @@ def test_page():
             if not st.session_state.get('camera_active', False):
                 if st.button('Start Camera'):
                     if IS_HUGGINGFACE:
-                        request_camera_access()
                         st.session_state['camera_active'] = True
                         st.success("Camera initialized successfully!")
                     else:
