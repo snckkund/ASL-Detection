@@ -244,109 +244,97 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # For Hugging Face environment, use Python MediaPipe with Streamlit camera
-        # Initialize MediaPipe Hands
-        mp_hands = mp.solutions.hands
-        mp_drawing = mp.solutions.drawing_utils
-
-        # Create columns for debug info and video
-        col1, col2 = st.columns([1, 1])
+        st.write("## ASL Detection")
         
-        with col1:
-            st.write("Debug Information")
-            debug_placeholder = st.empty()
+        # Initialize state
+        if 'processing_active' not in st.session_state:
+            st.session_state.processing_active = False
+            
+        # Debug section
+        st.write("### Debug Information")
+        debug_info = st.empty()
+        debug_info.text("Waiting for camera input...")
         
-        with col2:
-            st.write("Video Feed")
-            # Use Streamlit's camera input
-            camera = st.camera_input("Camera Feed")
+        # Camera section
+        st.write("### Camera Feed")
+        camera = st.camera_input("Enable camera")
         
         if camera is not None:
             try:
-                # Convert the image from bytes to numpy array
+                # Basic image processing
+                debug_text = []
+                debug_text.append("1. Got camera input")
+                
+                # Convert to numpy array
                 img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                debug_text.append(f"2. Image shape: {frame.shape}")
                 
-                # Show image dimensions
-                debug_info = f"Image shape: {frame.shape}\n"
-                
-                # Convert BGR to RGB
+                # Convert to RGB
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                debug_info += "Converted to RGB\n"
+                debug_text.append("3. Converted to RGB")
                 
-                # Create a copy for drawing
-                display_frame = rgb_frame.copy()
+                # Initialize MediaPipe
+                mp_hands = mp.solutions.hands
+                mp_drawing = mp.solutions.drawing_utils
+                debug_text.append("4. Initialized MediaPipe")
                 
-                # Initialize MediaPipe Hands for each frame
+                # Process with MediaPipe
                 with mp_hands.Hands(
                     static_image_mode=True,
                     max_num_hands=1,
-                    min_detection_confidence=0.5
+                    min_detection_confidence=0.3
                 ) as hands:
-                    
-                    # Process the frame
                     results = hands.process(rgb_frame)
-                    debug_info += "Processed with MediaPipe\n"
+                    debug_text.append("5. Processed with MediaPipe")
                     
-                    # Check for hand landmarks
+                    # Create output frame
+                    output_frame = rgb_frame.copy()
+                    
                     if results.multi_hand_landmarks:
-                        debug_info += f"Found {len(results.multi_hand_landmarks)} hand(s)\n"
+                        debug_text.append(f"6. Found {len(results.multi_hand_landmarks)} hands")
                         
                         for hand_landmarks in results.multi_hand_landmarks:
-                            # Draw the landmarks
+                            # Draw basic landmarks
+                            for idx, landmark in enumerate(hand_landmarks.landmark):
+                                h, w, _ = output_frame.shape
+                                cx, cy = int(landmark.x * w), int(landmark.y * h)
+                                cv2.circle(output_frame, (cx, cy), 8, (0, 0, 255), -1)  # Red dots
+                                
+                            # Draw connections
                             mp_drawing.draw_landmarks(
-                                display_frame,
+                                output_frame,
                                 hand_landmarks,
                                 mp_hands.HAND_CONNECTIONS,
-                                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=4),
-                                mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2)
+                                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=3, circle_radius=5),
+                                mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=3)
                             )
+                            debug_text.append("7. Drew landmarks")
                             
-                            # Draw each landmark point with index
-                            for idx, landmark in enumerate(hand_landmarks.landmark):
-                                h, w, _ = display_frame.shape
-                                cx, cy = int(landmark.x * w), int(landmark.y * h)
-                                # Draw a filled circle for each landmark
-                                cv2.circle(display_frame, (cx, cy), 5, (255, 0, 0), -1)
-                                # Add landmark index
-                                cv2.putText(display_frame, str(idx), (cx+5, cy+5), 
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
-                            
-                            debug_info += "Drew landmarks on frame\n"
-                            
-                            # Make prediction if model is loaded
+                            # Make prediction
                             if st.session_state.model:
                                 landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
-                                landmarks_flat = landmarks.flatten()
-                                prediction = st.session_state.model.predict(landmarks_flat.reshape(1, -1))
+                                prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
                                 predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
                                 confidence = np.max(prediction)
                                 
-                                # Add prediction text
-                                cv2.putText(
-                                    display_frame,
-                                    f"{predicted_class} ({confidence:.2f})",
-                                    (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    1,
-                                    (0, 255, 0),
-                                    2
-                                )
-                                debug_info += f"Prediction: {predicted_class} ({confidence:.2f})\n"
+                                # Draw prediction
+                                text = f"{predicted_class} ({confidence:.2f})"
+                                cv2.putText(output_frame, text, (20, 40), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
+                                debug_text.append(f"8. Prediction: {text}")
                     else:
-                        debug_info += "No hands detected\n"
-                        
-                    # Update debug information
-                    with col1:
-                        debug_placeholder.text(debug_info)
+                        debug_text.append("6. No hands detected")
                     
-                    # Display the processed frame
-                    with col2:
-                        st.image(display_frame, channels="RGB", use_column_width=True)
-            
+                    # Update debug info
+                    debug_info.text("\n".join(debug_text))
+                    
+                    # Show processed frame
+                    st.image(output_frame, channels="RGB", caption="Processed Feed")
+                    
             except Exception as e:
-                st.error(f"Error processing frame: {str(e)}")
-                st.error(f"Error details: {type(e).__name__}")
+                st.error("Error in processing:")
+                st.error(str(e))
                 import traceback
                 st.error(traceback.format_exc())
     else:
