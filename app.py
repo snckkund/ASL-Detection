@@ -255,69 +255,121 @@ def run_camera_feed():
                 img_array = np.frombuffer(camera.getvalue(), dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 
-                # Convert to RGB
+                # Debug image shape and content
+                st.write(f"Frame shape: {frame.shape}")
+                st.write(f"Frame dtype: {frame.dtype}")
+                st.write(f"Frame min/max values: {frame.min()}, {frame.max()}")
+                
+                # Ensure correct image format and size
+                if frame.shape[0] > 1000:  # If image is too large
+                    scale = 1000 / frame.shape[0]
+                    frame = cv2.resize(frame, None, fx=scale, fy=scale)
+                
+                # Convert to RGB (MediaPipe requires RGB)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Process with MediaPipe
-                with mp.solutions.hands.Hands(
-                    static_image_mode=True,  # True for images
-                    max_num_hands=1,
-                    model_complexity=1,  # Higher model complexity
-                    min_detection_confidence=0.3,  # Lower threshold to detect more easily
-                    min_tracking_confidence=0.3
-                ) as hands:
-                    # Process the frame
-                    results = hands.process(rgb_frame)
+                # Initialize MediaPipe Hands with specific configurations for Hugging Face
+                hands = mp.solutions.hands.Hands(
+                    static_image_mode=True,
+                    max_num_hands=2,  # Allow detection of multiple hands
+                    model_complexity=0,  # Use simpler model for better performance
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+                
+                # Process the frame
+                results = hands.process(rgb_frame)
+                
+                # Create output frame
+                output_frame = rgb_frame.copy()
+                
+                # Draw hand landmarks if detected
+                if results.multi_hand_landmarks:
+                    st.write(f"Number of hands detected: {len(results.multi_hand_landmarks)}")
                     
-                    # Create a copy for drawing
-                    output_frame = rgb_frame.copy()
-                    
-                    # Draw hand landmarks if detected
-                    if results.multi_hand_landmarks:
-                        st.write(f"Detected {len(results.multi_hand_landmarks)} hand(s)")
+                    for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
+                        # Get handedness (left or right hand)
+                        handedness = results.multi_handedness[idx].classification[0].label
+                        st.write(f"Hand {idx+1}: {handedness}")
                         
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            # Draw landmarks with VERY visible settings
-                            mp_drawing.draw_landmarks(
+                        # Draw skeleton
+                        mp.solutions.drawing_utils.draw_landmarks(
+                            output_frame,
+                            hand_landmarks,
+                            mp.solutions.hands.HAND_CONNECTIONS,
+                            mp.solutions.drawing_utils.DrawingSpec(
+                                color=(255, 0, 0),  # Red color for landmarks
+                                thickness=8,
+                                circle_radius=8
+                            ),
+                            mp.solutions.drawing_utils.DrawingSpec(
+                                color=(0, 255, 0),  # Green color for connections
+                                thickness=5
+                            )
+                        )
+                        
+                        # Draw additional markers for better visibility
+                        h, w, _ = output_frame.shape
+                        for lm_id, landmark in enumerate(hand_landmarks.landmark):
+                            # Convert normalized coordinates to pixel coordinates
+                            x = int(landmark.x * w)
+                            y = int(landmark.y * h)
+                            
+                            # Draw large filled circle
+                            cv2.circle(
                                 output_frame,
-                                hand_landmarks,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=10, circle_radius=10),  # Red dots
-                                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=8)  # Green lines
+                                (x, y),
+                                12,  # Larger radius
+                                (0, 0, 255),  # Blue color
+                                -1  # Filled circle
                             )
                             
-                            # Draw additional circles at each landmark for extra visibility
-                            h, w, _ = output_frame.shape
-                            for landmark in hand_landmarks.landmark:
-                                x = int(landmark.x * w)
-                                y = int(landmark.y * h)
-                                cv2.circle(output_frame, (x, y), 15, (255, 0, 0), -1)  # Filled blue circle
+                            # Draw landmark ID for debugging
+                            cv2.putText(
+                                output_frame,
+                                str(lm_id),
+                                (x+10, y+10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (255, 255, 255),
+                                2
+                            )
+                        
+                        # Make prediction if model is loaded
+                        if st.session_state.model:
+                            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+                            prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
+                            predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
+                            confidence = np.max(prediction)
                             
-                            # Make prediction if model is loaded
-                            if st.session_state.model:
-                                landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
-                                prediction = st.session_state.model.predict(landmarks.flatten().reshape(1, -1))
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction)]
-                                confidence = np.max(prediction)
-                                
-                                # Draw prediction text with better visibility
-                                cv2.putText(
-                                    output_frame,
-                                    f"{predicted_class} ({confidence:.2f})",
-                                    (20, 70),  # Moved down a bit
-                                    cv2.FONT_HERSHEY_SIMPLEX,
-                                    2.0,  # Larger font
-                                    (255, 255, 255),  # White color
-                                    4  # Thicker text
-                                )
-                    else:
-                        st.write("No hands detected")
-                    
-                    # Display the processed frame
-                    st.image(output_frame, channels="RGB", caption="Processed Feed", use_container_width=True)
-            
+                            # Draw prediction with high visibility
+                            cv2.putText(
+                                output_frame,
+                                f"{predicted_class} ({confidence:.2f})",
+                                (20, 70),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                2.0,
+                                (255, 255, 255),
+                                4
+                            )
+                else:
+                    st.write("No hands detected in the frame")
+                
+                # Display both original and processed frames for comparison
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("Original Frame")
+                    st.image(rgb_frame, channels="RGB", use_container_width=True)
+                with col2:
+                    st.write("Processed Frame (with landmarks)")
+                    st.image(output_frame, channels="RGB", use_container_width=True)
+                
+                # Cleanup
+                hands.close()
+                
             except Exception as e:
-                st.error(f"Error processing frame: {str(e)}")
+                st.error("Error in hand tracking:")
+                st.error(str(e))
                 import traceback
                 st.error(traceback.format_exc())
     else:
