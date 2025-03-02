@@ -372,6 +372,10 @@ def run_camera_feed():
                 // Function to update prediction display
                 window.updatePrediction = function(label, confidence) {
                     predictionElement.textContent = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                    // Draw prediction on canvas
+                    canvasCtx.fillStyle = 'white';
+                    canvasCtx.font = '24px Arial';
+                    canvasCtx.fillText(`${label} (${(confidence * 100).toFixed(1)}%)`, 10, 30);
                 };
                 
                 startCamera();
