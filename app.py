@@ -175,49 +175,6 @@ def stop_camera():
         st.session_state['camera_active'] = False
         st.success('Camera stopped.')
 
-def process_frame(frame, hand_tracker, model):
-    """Process a single frame with hand tracking and model prediction."""
-    try:
-        # Convert the frame to RGB for MediaPipe
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hand_tracker.process(frame_rgb)
-        
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Draw landmarks
-                mp_drawing.draw_landmarks(
-                    frame_rgb,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                    mp_drawing_styles.get_default_hand_connections_style()
-                )
-                
-                # Get prediction
-                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                prediction = model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                confidence = np.max(prediction[0])
-                
-                # Add prediction text
-                h, w = frame_rgb.shape[:2]
-                x_min = int(min(l.x for l in hand_landmarks.landmark) * w)
-                y_min = int(min(l.y for l in hand_landmarks.landmark) * h)
-                cv2.putText(
-                    frame_rgb,
-                    f"{predicted_class} ({confidence:.2%})",
-                    (max(0, x_min - 10), max(20, y_min - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 255, 0),
-                    2
-                )
-        
-        return frame_rgb, results.multi_hand_landmarks is not None
-    except Exception as e:
-        st.error(f"Error processing frame: {str(e)}")
-        return frame_rgb, False
-
 def main():
     if not check_camera_permission():
         exit()  # Exit if permission is not granted
@@ -500,32 +457,42 @@ def test_page():
         # Main camera loop
         if st.session_state.get('camera_active', False) and hasattr(st.session_state, 'cap'):
             FRAME_WINDOW = st.empty()
-            try:
-                while True:
+            while True:
+                try:
                     ret, frame = st.session_state.cap.read()
                     if not ret:
                         st.error("Failed to read from camera")
                         cleanup()
                         break
+
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # Process frame
-                    processed_frame, hand_detected = process_frame(
-                        frame,
-                        st.session_state.hand_tracker,
-                        st.session_state.model
-                    )
-                    
-                    # Display the frame
-                    FRAME_WINDOW.image(processed_frame, channels="RGB", use_container_width=True)
-                    
-                    # Add a small delay to control frame rate
-                    time.sleep(0.03)  # Approximately 30 FPS
-                    
-            except Exception as e:
-                st.error(f"Camera error: {str(e)}")
-                cleanup()
-            finally:
-                cleanup()
+                    try:
+                        results = st.session_state.hand_tracker.process(frame_rgb)
+                        
+                        if results.multi_hand_landmarks:
+                            for hand_landmarks in results.multi_hand_landmarks:
+                                mp_drawing.draw_landmarks(
+                                    frame_rgb,
+                                    hand_landmarks,
+                                    mp_hands.HAND_CONNECTIONS,
+                                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                                    mp_drawing_styles.get_default_hand_connections_style()
+                                )
+
+                        # Display the frame
+                        FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                        time.sleep(0.01)  # Small delay to prevent overwhelming the browser
+                        
+                    except Exception as e:
+                        st.error(f"Error processing frame: {str(e)}")
+                        cleanup()
+                        break
+
+                except Exception as e:
+                    st.error(f"Camera error: {str(e)}")
+                    cleanup()
+                    break
     # Upload Mode
     else:
         uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
