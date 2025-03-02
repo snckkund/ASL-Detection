@@ -23,12 +23,14 @@ from src.hand_tracking import HandTracker
 IS_HUGGINGFACE = "SPACE_ID" in os.environ
 IS_LOCAL = not IS_HUGGINGFACE
 
-# Only initialize MediaPipe if running locally
-if IS_LOCAL:
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
-    hand_tracker = HandTracker(confidence_threshold=0.7)
+# Initialize MediaPipe components
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+hand_tracker = HandTracker(confidence_threshold=0.7)
+
+# Define paths
+CHART_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'chart.jpg')
 
 @st.cache_resource
 def load_cached_model():
@@ -39,49 +41,58 @@ def load_cached_model():
                 # Optimize for Hugging Face environment
                 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
                 tf.config.set_visible_devices([], 'GPU')
-                # Load model with reduced memory usage
-                model = load_trained_model(MODEL_PATH)
-                return model
-            else:
-                return load_trained_model(MODEL_PATH)
+            # Load model with reduced memory usage
+            model = load_trained_model(MODEL_PATH)
+            return model
     return None
 
 def init_session_state():
     if 'mode' not in st.session_state:
-        st.session_state.mode = 'upload' if IS_HUGGINGFACE else 'camera'
+        st.session_state.mode = 'camera'  # Default to camera mode for all environments
     if 'camera_active' not in st.session_state:
         st.session_state.camera_active = False
     if 'model' not in st.session_state:
         st.session_state.model = load_cached_model()
-    if 'hand_tracker' not in st.session_state and IS_LOCAL:
+    if 'hand_tracker' not in st.session_state:
         st.session_state.hand_tracker = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
+    if 'camera_permission_requested' not in st.session_state:
+        st.session_state.camera_permission_requested = False
 
 def check_camera_permission():
     """Check if camera access is allowed"""
-    if IS_HUGGINGFACE:
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            return False
+        cap.release()
+        return True
+    except Exception as e:
+        print(f"Camera access error: {str(e)}")
         return False
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Camera access denied. Please allow camera access to use this feature.")
-        return False
-    cap.release()
-    return True
 
 def request_camera_access():
     """Request camera access from browser"""
-    if IS_HUGGINGFACE:
+    if st.session_state.get('camera_permission_requested'):
         return
+        
+    st.session_state.camera_permission_requested = True
     st.components.v1.html("""
         <div id="camera_permission">Requesting camera access...</div>
         <script>
             async function requestCamera() {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                            frameRate: { ideal: 30 }
+                        }
+                    });
                     document.getElementById('camera_permission').innerText = 'Camera access granted!';
                     stream.getTracks().forEach(track => track.stop());
                 } catch (err) {
@@ -92,7 +103,7 @@ def request_camera_access():
             requestCamera();
         </script>
     """, height=50)
-    time.sleep(2)
+    time.sleep(1)  # Brief delay for permission dialog
 
 def cleanup():
     """Clean up camera resources safely"""
@@ -112,32 +123,39 @@ def cleanup():
     except Exception as e:
         st.error(f"Error during cleanup: {str(e)}")
 
-def get_sample_image(sign):
-    """Get a sample image from the training dataset"""
-    train_dir = "dataset/asl_alphabet_train/asl_alphabet_train"
-    sign_dir = os.path.join(train_dir, sign)
-    if os.path.exists(sign_dir):
-        images = [f for f in os.listdir(sign_dir) if f.endswith(('.jpg', '.jpeg', '.png'))]
-        if images:
-            return os.path.join(sign_dir, images[0])
-    return None
-
 def show_reference_chart():
     """Display ASL reference chart"""
-    cols = st.columns(6)
-    alphabets = [chr(i) for i in range(65, 91)]
-    special = ['del', 'nothing', 'space']
-    all_signs = alphabets + special
-    
-    for idx, sign in enumerate(all_signs):
-        col_idx = idx % 6
-        with cols[col_idx]:
-            st.write(f"**{sign}**")
-            img_path = get_sample_image(sign)
-            if img_path:
-                img = Image.open(img_path)
-                img = img.resize((100, 100))
-                st.image(img, use_container_width=True)
+    try:
+        # Load and display the reference chart image
+        if os.path.exists(CHART_PATH):
+            image = Image.open(CHART_PATH)
+            # Resize image to be more compact while maintaining aspect ratio
+            width, height = image.size
+            new_width = 600  # Set a smaller fixed width
+            new_height = int((new_width * height) / width)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Create a container with custom styling
+            with st.container():
+                st.markdown("""
+                    <style>
+                    .reference-chart {
+                        border: 1px solid #ddd;
+                        border-radius: 5px;
+                        padding: 5px;  # Reduced padding
+                        background-color: white;
+                        margin-bottom: 10px;  # Reduced margin
+                        box-shadow: none;  /* Remove white bar effect */
+                    }
+                    </style>
+                    <div class="reference-chart">
+                    """, unsafe_allow_html=True)
+                st.image(image, use_container_width=True, caption="ASL Reference Chart")
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.error("Reference chart not found. Please check the assets directory.")
+    except Exception as e:
+        st.error(f"Error loading reference chart: {str(e)}")
 
 def stop_camera():
     """Stop and release camera resources"""
@@ -151,7 +169,7 @@ def main():
     init_session_state()
     
     if 'current_mode' not in st.session_state:
-        st.session_state.current_mode = "Upload" if IS_HUGGINGFACE else "Camera"
+        st.session_state.current_mode = "Camera"  # Default to camera for all environments
 
     # Sidebar
     st.sidebar.title("Navigation")
@@ -161,7 +179,7 @@ def main():
         available_pages = ["Dataset Info", "Train Model", "Test Model"]
     else:
         available_pages = ["Test Model"]
-        st.sidebar.info("⚡ Running on Hugging Face - Camera features disabled")
+        st.sidebar.info("⚡ Running on Hugging Face")
     
     page = st.sidebar.radio("Go to", available_pages)
 
@@ -349,8 +367,8 @@ def test_page():
         st.error("Model not found. Please train the model first.")
         return
     
-    # Add reference chart in an expander
-    with st.expander("📖 ASL Reference Chart", expanded=True):
+    # Add reference chart in a smaller expander
+    with st.expander("📖 ASL Reference Chart", expanded=False):
         show_reference_chart()
 
     # Mode selection with toggle buttons
@@ -389,10 +407,6 @@ def test_page():
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
-        if IS_HUGGINGFACE:
-            st.error("Camera features are disabled in Hugging Face environment.")
-            return
-        
         # Camera controls
         control_col1, control_col2 = st.columns(2)
         FRAME_WINDOW = st.empty()
@@ -400,8 +414,8 @@ def test_page():
         with control_col1:
             if not st.session_state.get('camera_active', False):
                 if st.button('Start Camera'):
-                    request_camera_access()  # Request browser permission first
-                    time.sleep(1)  # Give time for browser permission dialog
+                    # Request camera permission first
+                    request_camera_access()
                     
                     # Initialize camera
                     if 'cap' in st.session_state and st.session_state.cap is not None:
@@ -411,10 +425,11 @@ def test_page():
                     if st.session_state.cap.isOpened():
                         st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                         st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        st.session_state.cap.set(cv2.CAP_PROP_FPS, 30)
                         st.session_state['camera_active'] = True
                         st.success("Camera initialized successfully!")
                     else:
-                        st.error("Could not initialize camera. Please check permissions.")
+                        st.error("Could not initialize camera. Please check permissions and try again.")
 
         with control_col2:
             if st.session_state.get('camera_active', False):
@@ -476,6 +491,7 @@ def test_page():
                     st.error(f"Camera error: {str(e)}")
                     cleanup()
                     break
+
     # Upload Mode
     else:
         uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
