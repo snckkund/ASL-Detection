@@ -54,9 +54,11 @@ jobs:
           git add README.md .gitattributes || true
           git commit -m "Preserve HF README and .gitattributes" || true
           
-          # Push to Hugging Face with LFS
-          git lfs push --all space temp_branch:main
-          git push space temp_branch:main --force
+          # Push LFS objects first
+          git lfs push --all space
+          
+          # Push to Hugging Face
+          git push -f space temp_branch:main
           
           # Cleanup
           git checkout main
