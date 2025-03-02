@@ -1,8 +1,9 @@
-import streamlit as st
-import cv2
-import numpy as np
 import os
+import cv2
 import time
+import base64
+import numpy as np
+import streamlit as st
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -183,83 +184,202 @@ def stop_camera():
 
 def run_camera_feed():
     """Run the camera feed continuously"""
-    FRAME_WINDOW = st.empty()
-    
-    try:
-        while True:
-            if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
-                break
+    if IS_HUGGINGFACE:
+        # For Hugging Face, use browser-based camera
+        st.components.v1.html("""
+            <div style="position: relative;">
+                <video id="webcam" autoplay playsinline style="width: 100%; max-width: 640px;"></video>
+                <canvas id="canvas" style="display: none;"></canvas>
+            </div>
+            <script>
+                const video = document.getElementById('webcam');
+                const canvas = document.getElementById('canvas');
+                const ctx = canvas.getContext('2d');
 
-            ret, frame = st.session_state.cap.read()
-            if not ret:
-                st.error("Failed to read from camera")
-                cleanup()
-                break
+                async function setupCamera() {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: 640,
+                                height: 480,
+                                frameRate: 30
+                            }
+                        });
+                        video.srcObject = stream;
+                        await video.play();
+                        
+                        // Set canvas size to match video
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        
+                        // Start sending frames
+                        sendFrames();
+                        
+                    } catch (error) {
+                        console.error('Error:', error);
+                    }
+                }
 
-            # Convert frame to RGB for MediaPipe
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
+                function sendFrames() {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        // Draw video frame to canvas
+                        ctx.drawImage(video, 0, 0);
+                        // Get frame data
+                        const imageData = canvas.toDataURL('image/jpeg', 0.8);
+                        // Send to Python
+                        window.parent.postMessage({
+                            type: 'video_frame',
+                            data: imageData
+                        }, '*');
+                    }
+                    // Continue sending frames
+                    requestAnimationFrame(sendFrames);
+                }
+
+                setupCamera();
+            </script>
+        """, height=500)
+        
+        # Add frame receiver
+        st.components.v1.html("""
+            <script>
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'video_frame') {
+                        window.streamlit.setComponentValue({
+                            type: 'frame',
+                            data: event.data.data
+                        });
+                    }
+                });
+            </script>
+        """, height=0)
+        
+        # Process frames if available
+        if 'component_value' in st.session_state:
             try:
-                # Process frame with MediaPipe Hands
-                results = st.session_state.hand_tracker.process(frame_rgb)
-                
-                if results.multi_hand_landmarks:
-                    # Draw hand landmarks
-                    for hand_landmarks in results.multi_hand_landmarks:
-                        # Draw connections between landmarks
-                        mp_drawing.draw_landmarks(
-                            frame_rgb,
-                            hand_landmarks,
-                            mp_hands.HAND_CONNECTIONS,
-                            mp_drawing_styles.get_default_hand_landmarks_style(),
-                            mp_drawing_styles.get_default_hand_connections_style()
-                        )
+                frame_data = st.session_state.component_value.get('data')
+                if frame_data:
+                    # Convert base64 image to numpy array
+                    encoded_data = frame_data.split(',')[1]
+                    nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if frame is not None:
+                        # Convert to RGB for MediaPipe
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         
-                        # Extract landmarks for prediction
-                        landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                        # Process with MediaPipe
+                        results = st.session_state.hand_tracker.process(frame_rgb)
                         
-                        # Make prediction
-                        prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                        predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                        confidence = np.max(prediction[0])
-
-                        # Draw prediction text
-                        h, w, _ = frame_rgb.shape
-                        x_min = int(min(l.x * w for l in hand_landmarks.landmark))
-                        y_min = int(min(l.y * h for l in hand_landmarks.landmark))
+                        if results.multi_hand_landmarks:
+                            for hand_landmarks in results.multi_hand_landmarks:
+                                # Draw landmarks
+                                mp_drawing.draw_landmarks(
+                                    frame_rgb,
+                                    hand_landmarks,
+                                    mp_hands.HAND_CONNECTIONS,
+                                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                                    mp_drawing_styles.get_default_hand_connections_style()
+                                )
+                                
+                                # Get predictions
+                                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                                confidence = np.max(prediction[0])
+                                
+                                # Draw prediction text
+                                h, w, _ = frame_rgb.shape
+                                x_min = int(min(l.x * w for l in hand_landmarks.landmark))
+                                y_min = int(min(l.y * h for l in hand_landmarks.landmark))
+                                
+                                text = f"{predicted_class} ({confidence:.1%})"
+                                font = cv2.FONT_HERSHEY_SIMPLEX
+                                font_scale = 1
+                                thickness = 2
+                                text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                                
+                                # Draw background rectangle
+                                cv2.rectangle(frame_rgb, 
+                                            (x_min - 10, y_min - text_size[1] - 20),
+                                            (x_min + text_size[0] + 10, y_min),
+                                            (0, 0, 0), -1)
+                                
+                                # Draw text
+                                cv2.putText(frame_rgb, text,
+                                          (x_min, y_min - 10), font,
+                                          font_scale, (255, 255, 255), thickness)
                         
-                        # Add background rectangle for better text visibility
-                        text = f"{predicted_class} ({confidence:.1%})"
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 1
-                        thickness = 2
-                        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                        # Display processed frame
+                        st.image(frame_rgb, channels="RGB", use_container_width=True)
                         
-                        # Draw black background rectangle
-                        cv2.rectangle(frame_rgb, 
-                                    (x_min - 10, y_min - text_size[1] - 20),
-                                    (x_min + text_size[0] + 10, y_min),
-                                    (0, 0, 0), -1)
-                        
-                        # Draw white text
-                        cv2.putText(frame_rgb, text,
-                                  (x_min, y_min - 10), font,
-                                  font_scale, (255, 255, 255), thickness)
-
-                # Display the frame
-                FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
-                
             except Exception as e:
                 st.error(f"Error processing frame: {str(e)}")
-                cleanup()
-                break
+    else:
+        # For local environment, use OpenCV camera
+        FRAME_WINDOW = st.empty()
+        try:
+            while True:
+                if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
+                    break
 
-            # Add a small delay to maintain stable framerate
-            time.sleep(0.033)  # ~30 FPS
-            
-    except Exception as e:
-        st.error(f"Camera error: {str(e)}")
-        cleanup()
+                ret, frame = st.session_state.cap.read()
+                if not ret:
+                    st.error("Failed to read from camera")
+                    cleanup()
+                    break
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                try:
+                    results = st.session_state.hand_tracker.process(frame_rgb)
+                    
+                    if results.multi_hand_landmarks:
+                        for hand_landmarks in results.multi_hand_landmarks:
+                            mp_drawing.draw_landmarks(
+                                frame_rgb,
+                                hand_landmarks,
+                                mp_hands.HAND_CONNECTIONS,
+                                mp_drawing_styles.get_default_hand_landmarks_style(),
+                                mp_drawing_styles.get_default_hand_connections_style()
+                            )
+                            
+                            landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                            prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                            predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                            confidence = np.max(prediction[0])
+
+                            h, w, _ = frame_rgb.shape
+                            x_min = int(min(l.x * w for l in hand_landmarks.landmark))
+                            y_min = int(min(l.y * h for l in hand_landmarks.landmark))
+                            
+                            text = f"{predicted_class} ({confidence:.1%})"
+                            font = cv2.FONT_HERSHEY_SIMPLEX
+                            font_scale = 1
+                            thickness = 2
+                            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                            
+                            cv2.rectangle(frame_rgb, 
+                                        (x_min - 10, y_min - text_size[1] - 20),
+                                        (x_min + text_size[0] + 10, y_min),
+                                        (0, 0, 0), -1)
+                            
+                            cv2.putText(frame_rgb, text,
+                                      (x_min, y_min - 10), font,
+                                      font_scale, (255, 255, 255), thickness)
+
+                    FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"Error processing frame: {str(e)}")
+                    cleanup()
+                    break
+
+                time.sleep(0.033)
+                
+        except Exception as e:
+            st.error(f"Camera error: {str(e)}")
+            cleanup()
 
 def get_button_style(active):
     return f"""
