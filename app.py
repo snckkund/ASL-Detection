@@ -84,8 +84,6 @@ def request_camera_access():
     st.components.v1.html("""
         <div id="camera_permission">Requesting camera access...</div>
         <script>
-            let videoElement = null;
-            
             async function requestCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -95,24 +93,11 @@ def request_camera_access():
                             frameRate: { ideal: 30 }
                         }
                     });
-                    
-                    // Create video element if it doesn't exist
-                    if (!videoElement) {
-                        videoElement = document.createElement('video');
-                        videoElement.style.display = 'none';
-                        document.body.appendChild(videoElement);
-                    }
-                    
-                    // Connect stream to video element
-                    videoElement.srcObject = stream;
-                    await videoElement.play();
-                    
                     document.getElementById('camera_permission').innerText = 'Camera access granted!';
-                    window.streamActive = true;
+                    stream.getTracks().forEach(track => track.stop());
                 } catch (err) {
                     document.getElementById('camera_permission').innerText = 'Camera access denied: ' + err.message;
                     console.error('Error:', err);
-                    window.streamActive = false;
                 }
             }
             requestCamera();
@@ -120,66 +105,22 @@ def request_camera_access():
     """, height=50)
     time.sleep(1)  # Brief delay for permission dialog
 
-def initialize_browser_camera():
-    """Initialize camera in browser environment"""
+def initialize_camera():
+    """Initialize camera with proper settings"""
     try:
-        st.components.v1.html("""
-            <div style="display: none;">
-                <video id="camera" autoplay playsinline></video>
-                <canvas id="canvas"></canvas>
-            </div>
-            <script>
-                const video = document.getElementById('camera');
-                const canvas = document.getElementById('canvas');
-                const context = canvas.getContext('2d');
-                
-                async function startCamera() {
-                    try {
-                        const stream = await navigator.mediaDevices.getUserMedia({
-                            video: {
-                                width: 640,
-                                height: 480,
-                                frameRate: 30
-                            }
-                        });
-                        video.srcObject = stream;
-                        await video.play();
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        
-                        // Store stream in window object for later access
-                        window.cameraStream = stream;
-                        
-                        // Start frame capture loop
-                        function captureFrame() {
-                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                                const imageData = canvas.toDataURL('image/jpeg');
-                                window.parent.postMessage({type: 'video_frame', data: imageData}, '*');
-                            }
-                            requestAnimationFrame(captureFrame);
-                        }
-                        captureFrame();
-                        
-                        return true;
-                    } catch (err) {
-                        console.error('Error:', err);
-                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
-                    }
-                }
-                
-                // Start camera when component loads
-                startCamera().then(success => {
-                    window.cameraInitialized = success;
-                });
-            </script>
-        """)
-        # Wait briefly for camera initialization
-        time.sleep(2)
-        return True
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            # Set camera properties
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            return cap
+        else:
+            st.error("Could not open camera. Please check permissions.")
+            return None
     except Exception as e:
-        st.error(f"Camera initialization error: {str(e)}")
-        return False
+        st.error(f"Error initializing camera: {str(e)}")
+        return None
 
 def cleanup():
     """Clean up camera resources safely"""
@@ -561,34 +502,29 @@ def test_page():
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
-        # Camera controls
+        # Create two columns for camera controls
         control_col1, control_col2 = st.columns(2)
         
         with control_col1:
             if not st.session_state.get('camera_active', False):
-                if st.button('Start Camera'):
-                    if IS_HUGGINGFACE:
+                if st.button("📷 Start Camera", key="start_camera"):
+                    request_camera_access()
+                    
+                    # Initialize camera
+                    if 'cap' in st.session_state and st.session_state.cap is not None:
+                        st.session_state.cap.release()
+                    
+                    st.session_state.cap = initialize_camera()
+                    if st.session_state.cap is not None:
                         st.session_state['camera_active'] = True
                         st.success("Camera initialized successfully!")
-                    else:
-                        if 'cap' in st.session_state and st.session_state.cap is not None:
-                            st.session_state.cap.release()
-                        
-                        st.session_state.cap = cv2.VideoCapture(0)
-                        if st.session_state.cap.isOpened():
-                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                            st.session_state.cap.set(cv2.CAP_PROP_FPS, 30)
-                            st.session_state['camera_active'] = True
-                            st.success("Camera initialized successfully!")
-                        else:
-                            st.error("Could not initialize camera. Please check permissions and try again.")
+                        st.experimental_rerun()  # Force rerun to start the camera feed
 
         with control_col2:
             if st.session_state.get('camera_active', False):
                 if st.button("⏹️ Stop Camera", key="stop_camera"):
                     cleanup()
-                    st.rerun()
+                    st.experimental_rerun()
 
         # Run camera feed if active
         if st.session_state.get('camera_active', False):
