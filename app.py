@@ -248,6 +248,17 @@ def run_camera_feed():
             <div>
                 <video id="camera" autoplay playsinline style="display: none;"></video>
                 <canvas id="output_canvas" style="width: 100%; max-width: 640px; height: auto;"></canvas>
+                <div id="prediction" style="
+                    position: absolute;
+                    top: 10px;
+                    left: 10px;
+                    background: rgba(0,0,0,0.7);
+                    color: white;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 16px;
+                    font-weight: bold;
+                "></div>
             </div>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
@@ -255,7 +266,26 @@ def run_camera_feed():
             <script>
                 const videoElement = document.getElementById('camera');
                 const canvasElement = document.getElementById('output_canvas');
+                const predictionElement = document.getElementById('prediction');
                 const canvasCtx = canvasElement.getContext('2d');
+
+                // Define colors for different fingers
+                const fingerColors = {
+                    thumb: '#FF0000',      // Red
+                    index: '#00FF00',      // Green
+                    middle: '#0000FF',     // Blue
+                    ring: '#FFFF00',       // Yellow
+                    pinky: '#FF00FF'       // Magenta
+                };
+
+                // Define landmark indices for each finger
+                const fingerLandmarks = {
+                    thumb: [1, 2, 3, 4],
+                    index: [5, 6, 7, 8],
+                    middle: [9, 10, 11, 12],
+                    ring: [13, 14, 15, 16],
+                    pinky: [17, 18, 19, 20]
+                };
                 
                 function onResults(results) {
                     // Set canvas dimensions to match video
@@ -268,9 +298,22 @@ def run_camera_feed():
                     
                     if (results.multiHandLandmarks) {
                         for (const landmarks of results.multiHandLandmarks) {
+                            // Draw connections
                             drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
-                                        {color: '#00FF00', lineWidth: 5});
-                            drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
+                                        {color: '#FFFFFF', lineWidth: 3});
+                            
+                            // Draw landmarks with different colors for each finger
+                            for (const [finger, indices] of Object.entries(fingerLandmarks)) {
+                                const color = fingerColors[finger];
+                                indices.forEach(index => {
+                                    drawLandmarks(canvasCtx, [landmarks[index]], {
+                                        color: color,
+                                        fillColor: color,
+                                        lineWidth: 2,
+                                        radius: 5
+                                    });
+                                });
+                            }
                             
                             // Send landmarks to Python for prediction
                             window.parent.postMessage({
@@ -326,6 +369,11 @@ def run_camera_feed():
                     }
                 }
                 
+                // Function to update prediction display
+                window.updatePrediction = function(label, confidence) {
+                    predictionElement.textContent = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                };
+                
                 startCamera();
             </script>
         """, height=500)
@@ -334,7 +382,7 @@ def run_camera_feed():
         if 'prediction_display' not in st.session_state:
             st.session_state.prediction_display = st.empty()
             
-        # Handle landmark data from JavaScript
+        # Handle landmark data from JavaScript and make predictions
         st.components.v1.html(
             """
             <script>
@@ -351,8 +399,31 @@ def run_camera_feed():
             </script>
             """,
             height=0,
+            key='landmark_handler'
         )
         
+        # Process landmarks and update predictions
+        if st.session_state.get('component_value'):
+            try:
+                landmarks_data = st.session_state.component_value['data']
+                landmarks = np.array([[l['x'], l['y'], l['z'] for l in landmarks_data]]).flatten()
+                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                confidence = np.max(prediction[0])
+                
+                # Send prediction back to JavaScript
+                st.components.v1.html(
+                    f"""
+                    <script>
+                        window.updatePrediction('{predicted_class}', {confidence});
+                    </script>
+                    """,
+                    height=0,
+                    key='prediction_updater'
+                )
+            except Exception as e:
+                st.error(f"Prediction error: {str(e)}")
+                
     else:
         FRAME_WINDOW = st.empty()
         while True:
