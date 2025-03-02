@@ -1,26 +1,23 @@
-import os
-import cv2
-import time
-import base64
-import numpy as np
 import streamlit as st
+import cv2
+import numpy as np
+import os
+import time
 from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import mediapipe as mp
 
-# Set page config at the very start
-st.set_page_config(
-    page_title="ASL Detection System",
-    page_icon="👋",
-    layout="wide",
-    initial_sidebar_state="expanded"
+from src.model import create_landmark_model, load_trained_model, ASLEnsemble
+from src.data_utils import (
+    create_dataset, process_uploaded_image, get_dataset_stats,
+    plot_dataset_distribution, get_sample_images, extract_hand_landmarks, create_landmark_dataset
 )
-
-# Initialize MediaPipe
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+from src.config import (
+    TRAIN_DIR, TEST_DIR, MODEL_PATH, MODEL_DIR,
+    IDX_TO_CLASS, IMG_SIZE, EPOCHS
+)
+from src.hand_tracking import HandTracker
 
 # Detect environment
 IS_HUGGINGFACE = "SPACE_ID" in os.environ
@@ -30,35 +27,12 @@ IS_LOCAL = not IS_HUGGINGFACE
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
+hand_tracker = HandTracker(confidence_threshold=0.7)
 
-def init_session_state():
-    """Initialize session state variables"""
-    if 'model' not in st.session_state:
-        st.session_state.model = load_cached_model()
-    
-    if 'hand_tracker' not in st.session_state:
-        st.session_state.hand_tracker = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-    
-    if 'mode' not in st.session_state:
-        st.session_state.mode = 'camera'
-    
-    if 'camera_active' not in st.session_state:
-        st.session_state.camera_active = False
+# Define paths
+CHART_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'chart.jpg')
 
-def cleanup():
-    """Cleanup resources"""
-    if 'hand_tracker' in st.session_state:
-        st.session_state.hand_tracker.close()
-        del st.session_state.hand_tracker
-    
-    if 'camera_active' in st.session_state:
-        st.session_state.camera_active = False
-
+@st.cache_resource
 def load_cached_model():
     """Load and cache the model to prevent reloading"""
     if os.path.exists(MODEL_PATH):
@@ -72,16 +46,22 @@ def load_cached_model():
             return model
     return None
 
-from src.model import create_landmark_model, load_trained_model, ASLEnsemble
-from src.data_utils import (
-    create_dataset, process_uploaded_image, get_dataset_stats,
-    plot_dataset_distribution, get_sample_images, extract_hand_landmarks, create_landmark_dataset
-)
-from src.config import (
-    TRAIN_DIR, TEST_DIR, MODEL_PATH, MODEL_DIR,
-    IDX_TO_CLASS, IMG_SIZE, EPOCHS
-)
-from src.hand_tracking import HandTracker
+def init_session_state():
+    if 'mode' not in st.session_state:
+        st.session_state.mode = 'camera'  # Default to camera for all environments
+    if 'camera_active' not in st.session_state:
+        st.session_state.camera_active = False
+    if 'model' not in st.session_state:
+        st.session_state.model = load_cached_model()
+    if 'hand_tracker' not in st.session_state:
+        st.session_state.hand_tracker = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+    if 'camera_permission_requested' not in st.session_state:
+        st.session_state.camera_permission_requested = False
 
 def check_camera_permission():
     """Check if camera access is allowed"""
@@ -104,6 +84,8 @@ def request_camera_access():
     st.components.v1.html("""
         <div id="camera_permission">Requesting camera access...</div>
         <script>
+            let videoElement = null;
+            
             async function requestCamera() {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -113,11 +95,24 @@ def request_camera_access():
                             frameRate: { ideal: 30 }
                         }
                     });
+                    
+                    // Create video element if it doesn't exist
+                    if (!videoElement) {
+                        videoElement = document.createElement('video');
+                        videoElement.style.display = 'none';
+                        document.body.appendChild(videoElement);
+                    }
+                    
+                    // Connect stream to video element
+                    videoElement.srcObject = stream;
+                    await videoElement.play();
+                    
                     document.getElementById('camera_permission').innerText = 'Camera access granted!';
-                    stream.getTracks().forEach(track => track.stop());
+                    window.streamActive = true;
                 } catch (err) {
                     document.getElementById('camera_permission').innerText = 'Camera access denied: ' + err.message;
                     console.error('Error:', err);
+                    window.streamActive = false;
                 }
             }
             requestCamera();
@@ -125,22 +120,84 @@ def request_camera_access():
     """, height=50)
     time.sleep(1)  # Brief delay for permission dialog
 
-def initialize_camera():
-    """Initialize camera with proper settings"""
+def initialize_browser_camera():
+    """Initialize camera in browser environment"""
     try:
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            # Set camera properties
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            return cap
-        else:
-            st.error("Could not open camera. Please check permissions.")
-            return None
+        st.components.v1.html("""
+            <div style="display: none;">
+                <video id="camera" autoplay playsinline></video>
+                <canvas id="canvas"></canvas>
+            </div>
+            <script>
+                const video = document.getElementById('camera');
+                const canvas = document.getElementById('canvas');
+                const context = canvas.getContext('2d');
+                
+                async function startCamera() {
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                width: 640,
+                                height: 480,
+                                frameRate: 30
+                            }
+                        });
+                        video.srcObject = stream;
+                        await video.play();
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        
+                        // Store stream in window object for later access
+                        window.cameraStream = stream;
+                        
+                        // Start frame capture loop
+                        function captureFrame() {
+                            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                                const imageData = canvas.toDataURL('image/jpeg');
+                                window.parent.postMessage({type: 'video_frame', data: imageData}, '*');
+                            }
+                            requestAnimationFrame(captureFrame);
+                        }
+                        captureFrame();
+                        
+                        return true;
+                    } catch (err) {
+                        console.error('Error:', err);
+                        document.body.innerHTML += '<div style="color: red;">Camera error: ' + err.message + '</div>';
+                    }
+                }
+                
+                // Start camera when component loads
+                startCamera().then(success => {
+                    window.cameraInitialized = success;
+                });
+            </script>
+        """)
+        # Wait briefly for camera initialization
+        time.sleep(2)
+        return True
     except Exception as e:
-        st.error(f"Error initializing camera: {str(e)}")
-        return None
+        st.error(f"Camera initialization error: {str(e)}")
+        return False
+
+def cleanup():
+    """Clean up camera resources safely"""
+    try:
+        if hasattr(st.session_state, 'cap') and st.session_state.cap is not None:
+            st.session_state.cap.release()
+            st.session_state.cap = None
+            
+        if hasattr(st.session_state, 'hands') and st.session_state.hands is not None:
+            try:
+                st.session_state.hands.close()
+            except:
+                pass
+            st.session_state.hands = None
+            
+        st.session_state.camera_active = False
+    except Exception as e:
+        st.error(f"Error during cleanup: {str(e)}")
 
 def show_reference_chart():
     """Display ASL reference chart"""
@@ -186,23 +243,254 @@ def stop_camera():
 def run_camera_feed():
     """Run the camera feed continuously"""
     if IS_HUGGINGFACE:
-        # Use Streamlit's native camera input
-        camera_image = st.camera_input("Camera Feed")
+        # For browser environment, use JavaScript with MediaPipe
+        st.components.v1.html("""
+            <div style="position: relative; width: 640px; height: 480px;">
+                <video id="camera" autoplay playsinline style="width: 640px; height: 480px;"></video>
+                <canvas id="output_canvas" style="position: absolute; left: 0; top: 0; width: 640px; height: 480px;"></canvas>
+                <div id="debug" style="position: absolute; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); padding: 5px;"></div>
+            </div>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
+            <script>
+                const videoElement = document.getElementById('camera');
+                const canvasElement = document.getElementById('output_canvas');
+                const debugElement = document.getElementById('debug');
+                const canvasCtx = canvasElement.getContext('2d');
+                let currentPrediction = null;
+
+                // Set initial dimensions
+                canvasElement.width = 640;
+                canvasElement.height = 480;
+
+                function showDebug(text) {
+                    debugElement.textContent = text;
+                    console.log(text);
+                }
+
+                // Define colors for different fingers
+                const fingerColors = {
+                    thumb: '#FF0000',      // Red
+                    index: '#00FF00',      // Green
+                    middle: '#0000FF',     // Blue
+                    ring: '#FFFF00',       // Yellow
+                    pinky: '#FF00FF'       // Magenta
+                };
+
+                // Define landmark indices for each finger
+                const fingerLandmarks = {
+                    thumb: [1, 2, 3, 4],
+                    index: [5, 6, 7, 8],
+                    middle: [9, 10, 11, 12],
+                    ring: [13, 14, 15, 16],
+                    pinky: [17, 18, 19, 20]
+                };
+                
+                function drawPrediction(landmarks) {
+                    if (!currentPrediction) return;
+                    
+                    const {label, confidence} = currentPrediction;
+                    showDebug(`Current prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
+                    
+                    // Find top-left corner of hand bounding box
+                    let minX = Infinity;
+                    let minY = Infinity;
+                    landmarks.forEach(landmark => {
+                        minX = Math.min(minX, landmark.x * canvasElement.width);
+                        minY = Math.min(minY, landmark.y * canvasElement.height);
+                    });
+                    
+                    // Draw prediction text with background
+                    const text = `${label} (${(confidence * 100).toFixed(1)}%)`;
+                    const padding = 8;
+                    const fontSize = 20;
+                    canvasCtx.font = `${fontSize}px Arial`;
+                    const textMetrics = canvasCtx.measureText(text);
+                    
+                    // Draw background rectangle
+                    canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    canvasCtx.fillRect(
+                        minX - padding,
+                        minY - fontSize - padding * 2,
+                        textMetrics.width + padding * 2,
+                        fontSize + padding * 2
+                    );
+                    
+                    // Draw text
+                    canvasCtx.fillStyle = 'white';
+                    canvasCtx.fillText(text, minX, minY - padding);
+                }
+                
+                function onResults(results) {
+                    try {
+                        canvasCtx.save();
+                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                        canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                        
+                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                            showDebug('Hand detected');
+                            const landmarks = results.multiHandLandmarks[0];
+                            
+                            // Draw connections
+                            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
+                                        {color: '#FFFFFF', lineWidth: 2});
+                            
+                            // Draw landmarks with different colors for each finger
+                            for (const [finger, indices] of Object.entries(fingerLandmarks)) {
+                                const color = fingerColors[finger];
+                                indices.forEach(index => {
+                                    drawLandmarks(canvasCtx, [landmarks[index]], {
+                                        color: color,
+                                        fillColor: color,
+                                        lineWidth: 1,
+                                        radius: 3
+                                    });
+                                });
+                            }
+                            
+                            // Draw prediction
+                            drawPrediction(landmarks);
+                            
+                            // Send landmarks to Python for prediction
+                            window.parent.postMessage({
+                                type: 'hand_landmarks',
+                                landmarks: landmarks
+                            }, '*');
+                        } else {
+                            showDebug('No hand detected');
+                        }
+                        canvasCtx.restore();
+                    } catch (error) {
+                        showDebug('Error in onResults: ' + error.message);
+                    }
+                }
+                
+                const hands = new Hands({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`;
+                }});
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onResults);
+                
+                async function startCamera() {
+                    try {
+                        showDebug('Initializing camera...');
+                        const stream = await navigator.mediaDevices.getUserMedia({
+                            video: {
+                                facingMode: "user",
+                                width: 640,
+                                height: 480
+                            }
+                        });
+                        
+                        videoElement.srcObject = stream;
+                        showDebug('Camera initialized, waiting for video to play...');
+                        
+                        videoElement.onloadedmetadata = () => {
+                            showDebug('Video metadata loaded');
+                            videoElement.play().then(() => {
+                                showDebug('Video playing, starting hand detection...');
+                                // Start continuous frame processing
+                                function processFrame() {
+                                    try {
+                                        if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                                            hands.send({image: videoElement});
+                                        }
+                                        requestAnimationFrame(processFrame);
+                                    } catch (error) {
+                                        showDebug('Error in processFrame: ' + error.message);
+                                    }
+                                }
+                                processFrame();
+                            }).catch(error => {
+                                showDebug('Error playing video: ' + error.message);
+                            });
+                        };
+                        
+                    } catch (err) {
+                        showDebug('Camera error: ' + err.message);
+                    }
+                }
+                
+                // Function to update prediction display
+                window.updatePrediction = function(label, confidence) {
+                    showDebug(`Received prediction: ${label} (${(confidence * 100).toFixed(1)}%)`);
+                    currentPrediction = { label, confidence };
+                };
+                
+                showDebug('Starting camera...');
+                startCamera();
+            </script>
+        """, height=500)
         
-        if camera_image is not None:
-            # Convert the image to numpy array
-            image = Image.open(camera_image)
-            frame = np.array(image)
-            
-            # Process frame with MediaPipe
+        # Handle landmark data from JavaScript and make predictions
+        st.components.v1.html(
+            """
+            <script>
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'hand_landmarks') {
+                        const landmarks = event.data.landmarks;
+                        window.streamlit.setComponentValue({
+                            type: 'landmarks',
+                            data: landmarks
+                        });
+                    }
+                });
+            </script>
+            """,
+            height=0
+        )
+        
+        # Process landmarks and update predictions
+        if st.session_state.get('component_value'):
             try:
-                # Convert BGR to RGB
+                landmarks_data = st.session_state.component_value['data']
+                # Create flattened array of landmarks
+                landmarks_flat = []
+                for l in landmarks_data:
+                    landmarks_flat.extend([l['x'], l['y'], l['z']])
+                landmarks = np.array(landmarks_flat)
+                
+                # Make prediction
+                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                confidence = float(np.max(prediction[0]))
+                
+                # Send prediction back to JavaScript
+                st.components.v1.html(
+                    f"""
+                    <script>
+                        window.parent.updatePrediction('{predicted_class}', {confidence});
+                    </script>
+                    """,
+                    height=0
+                )
+            except Exception as e:
+                print(f"Prediction error: {str(e)}")
+    else:
+        FRAME_WINDOW = st.empty()
+        while True:
+            try:
+                if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
+                    break
+
+                ret, frame = st.session_state.cap.read()
+                if not ret:
+                    break
+
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Process frame with hand tracker
                 results = st.session_state.hand_tracker.process(frame_rgb)
                 
                 if results.multi_hand_landmarks:
                     for hand_landmarks in results.multi_hand_landmarks:
-                        # Draw landmarks
                         mp_drawing.draw_landmarks(
                             frame_rgb,
                             hand_landmarks,
@@ -211,104 +499,28 @@ def run_camera_feed():
                             mp_drawing_styles.get_default_hand_connections_style()
                         )
                         
-                        # Get predictions
+                        # Get landmarks and make prediction
                         landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
                         prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
                         predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
                         confidence = np.max(prediction[0])
-                        
-                        # Draw prediction text
+
+                        # Draw prediction on frame
                         h, w, _ = frame_rgb.shape
-                        x_min = int(min(l.x * w for l in hand_landmarks.landmark))
-                        y_min = int(min(l.y * h for l in hand_landmarks.landmark))
-                        
-                        text = f"{predicted_class} ({confidence:.1%})"
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        font_scale = 1
-                        thickness = 2
-                        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                        
-                        # Draw background rectangle
-                        cv2.rectangle(frame_rgb, 
-                                    (x_min - 10, y_min - text_size[1] - 20),
-                                    (x_min + text_size[0] + 10, y_min),
-                                    (0, 0, 0), -1)
-                        
-                        # Draw text
-                        cv2.putText(frame_rgb, text,
-                                  (x_min, y_min - 10), font,
-                                  font_scale, (255, 255, 255), thickness)
-                
-                # Display processed frame
-                st.image(frame_rgb, channels="RGB", use_container_width=True)
+                        coords = [(int(l.x * w), int(l.y * h)) for l in hand_landmarks.landmark]
+                        x_min = max(0, min(x for x, y in coords) - 20)
+                        y_min = max(0, min(y for x, y in coords) - 20)
+                        cv2.putText(frame_rgb, f"{predicted_class} ({confidence:.2%})",
+                                  (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                                  0.9, (0, 255, 0), 2)
+
+                # Display the frame
+                FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
+                time.sleep(0.033)  # Cap at ~30 FPS
                 
             except Exception as e:
-                st.error(f"Error processing frame: {str(e)}")
-    else:
-        # For local environment, use OpenCV camera
-        FRAME_WINDOW = st.empty()
-        try:
-            while True:
-                if not hasattr(st.session_state, 'cap') or st.session_state.cap is None:
-                    break
-
-                ret, frame = st.session_state.cap.read()
-                if not ret:
-                    st.error("Failed to read from camera")
-                    cleanup()
-                    break
-
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                try:
-                    results = st.session_state.hand_tracker.process(frame_rgb)
-                    
-                    if results.multi_hand_landmarks:
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            mp_drawing.draw_landmarks(
-                                frame_rgb,
-                                hand_landmarks,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_drawing_styles.get_default_hand_landmarks_style(),
-                                mp_drawing_styles.get_default_hand_connections_style()
-                            )
-                            
-                            landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                            prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                            predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                            confidence = np.max(prediction[0])
-
-                            h, w, _ = frame_rgb.shape
-                            x_min = int(min(l.x * w for l in hand_landmarks.landmark))
-                            y_min = int(min(l.y * h for l in hand_landmarks.landmark))
-                            
-                            text = f"{predicted_class} ({confidence:.1%})"
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            font_scale = 1
-                            thickness = 2
-                            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                            
-                            cv2.rectangle(frame_rgb, 
-                                        (x_min - 10, y_min - text_size[1] - 20),
-                                        (x_min + text_size[0] + 10, y_min),
-                                        (0, 0, 0), -1)
-                            
-                            cv2.putText(frame_rgb, text,
-                                      (x_min, y_min - 10), font,
-                                      font_scale, (255, 255, 255), thickness)
-
-                    FRAME_WINDOW.image(frame_rgb, channels="RGB", use_container_width=True)
-                    
-                except Exception as e:
-                    st.error(f"Error processing frame: {str(e)}")
-                    cleanup()
-                    break
-
-                time.sleep(0.033)
-                
-        except Exception as e:
-            st.error(f"Camera error: {str(e)}")
-            cleanup()
+                st.error(f"Camera error: {str(e)}")
+                break
 
 def get_button_style(active):
     return f"""
@@ -325,158 +537,30 @@ def get_button_style(active):
     """
 
 def main():
+    st.set_page_config(page_title="ASL Detection System", layout="wide")
     init_session_state()
     
-    st.title("ASL Vision: Sign Language Detection")
-    st.markdown("---")
+    if 'current_mode' not in st.session_state:
+        st.session_state.current_mode = "Camera"  # Default to camera for all environments
 
-    # Add reference chart in a smaller expander
-    with st.expander("📖 ASL Reference Chart", expanded=False):
-        show_reference_chart()
-
-    # Mode selection with toggle buttons in sidebar
-    st.sidebar.markdown("### Mode Selection")
+    # Sidebar
+    st.sidebar.title("Navigation")
     
-    if st.sidebar.button("📷 Camera Mode", key="sidebar_camera_mode", 
-                        help="Switch to camera mode for real-time detection"):
-        st.session_state.mode = 'camera'
-        cleanup()
-        st.rerun()
+    # Show appropriate pages based on environment
+    if IS_LOCAL:
+        available_pages = ["Dataset Info", "Train Model", "Test Model"]
+    else:
+        available_pages = ["Test Model"]
+        st.sidebar.info("⚡ Running on Hugging Face")
     
-    if st.sidebar.button("📤 Upload Mode", key="sidebar_upload_mode",
-                        help="Switch to upload mode for image detection"):
-        st.session_state.mode = 'upload'
-        cleanup()
-        st.rerun()
+    page = st.sidebar.radio("Go to", available_pages)
 
-    st.sidebar.markdown("---")
-
-    # Main content area
-    if st.session_state.get('mode') == 'camera':
-        st.subheader("📷 Camera Mode")
-        
-        # Camera controls in sidebar
-        st.sidebar.markdown("### Camera Controls")
-        if not st.session_state.get('camera_active', False):
-            if st.sidebar.button("▶️ Start Camera", key="sidebar_start_camera"):
-                st.session_state['camera_active'] = True
-                st.rerun()
-        else:
-            if st.sidebar.button("⏹️ Stop Camera", key="sidebar_stop_camera"):
-                st.session_state['camera_active'] = False
-                cleanup()
-                st.rerun()
-
-        # Camera feed and predictions
-        if st.session_state.get('camera_active', False):
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                camera_image = st.camera_input("Camera Feed", key="main_camera")
-                
-                if camera_image is not None:
-                    try:
-                        # Process image
-                        image = Image.open(camera_image)
-                        frame = np.array(image)
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        
-                        # Process with MediaPipe
-                        results = st.session_state.hand_tracker.process(frame_rgb)
-                        
-                        if results.multi_hand_landmarks:
-                            for hand_landmarks in results.multi_hand_landmarks:
-                                # Draw landmarks
-                                mp_drawing.draw_landmarks(
-                                    frame_rgb,
-                                    hand_landmarks,
-                                    mp_hands.HAND_CONNECTIONS,
-                                    mp_drawing_styles.get_default_hand_landmarks_style(),
-                                    mp_drawing_styles.get_default_hand_connections_style()
-                                )
-                                
-                                # Get predictions
-                                landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                                prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                                predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                                confidence = np.max(prediction[0])
-                                
-                                with col2:
-                                    st.markdown("### Prediction")
-                                    st.markdown(f"**Letter:** {predicted_class}")
-                                    st.markdown(f"**Confidence:** {confidence:.1%}")
-                                    
-                                    # Add visualization or additional info
-                                    st.markdown("### Hand Position")
-                                    st.markdown("✋ Hand detected and tracked")
-                                    
-                                    # Show confidence meter
-                                    st.progress(confidence)
-                            
-                            # Display processed frame
-                            st.image(frame_rgb, channels="RGB", use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Error processing frame: {str(e)}")
-
-    else:  # Upload Mode
-        st.subheader("📤 Upload Mode")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            uploaded_file = st.file_uploader(
-                "Choose an image...",
-                type=["jpg", "jpeg", "png"],
-                key="image_uploader"
-            )
-            
-            if uploaded_file is not None:
-                try:
-                    # Process image
-                    image = Image.open(uploaded_file)
-                    frame = np.array(image)
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    
-                    # Process with MediaPipe
-                    results = st.session_state.hand_tracker.process(frame_rgb)
-                    
-                    if results.multi_hand_landmarks:
-                        for hand_landmarks in results.multi_hand_landmarks:
-                            # Draw landmarks
-                            mp_drawing.draw_landmarks(
-                                frame_rgb,
-                                hand_landmarks,
-                                mp_hands.HAND_CONNECTIONS,
-                                mp_drawing_styles.get_default_hand_landmarks_style(),
-                                mp_drawing_styles.get_default_hand_connections_style()
-                            )
-                            
-                            # Get predictions
-                            landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
-                            prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
-                            predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
-                            confidence = np.max(prediction[0])
-                            
-                            with col2:
-                                st.markdown("### Prediction")
-                                st.markdown(f"**Letter:** {predicted_class}")
-                                st.markdown(f"**Confidence:** {confidence:.1%}")
-                                
-                                # Add visualization or additional info
-                                st.markdown("### Hand Position")
-                                st.markdown("✋ Hand detected and tracked")
-                                
-                                # Show confidence meter
-                                st.progress(confidence)
-                        
-                        # Display processed image
-                        st.image(frame_rgb, channels="RGB", use_container_width=True)
-                    else:
-                        st.warning("No hand detected in the image. Please try another image.")
-                        st.image(frame_rgb, channels="RGB", use_container_width=True)
-                        
-                except Exception as e:
-                    st.error(f"Error processing image: {str(e)}")
+    if page == "Dataset Info" and IS_LOCAL:
+        dataset_info_page()
+    elif page == "Train Model" and IS_LOCAL:
+        train_page()
+    else:
+        test_page()
 
 def dataset_info_page():
     st.header("Dataset Information")
@@ -561,7 +645,7 @@ def train_page():
                 landmark_status.text(f"Processing class: {class_name} ({idx + 1}/{total_classes})")
                 
                 # Process images in this class
-                class_landmarks, class_labels = create_landmark_dataset(class_path, st.session_state.hand_tracker)
+                class_landmarks, class_labels = create_landmark_dataset(class_path, hand_tracker)
                 if class_landmarks is not None and class_labels is not None:
                     train_landmarks.extend(class_landmarks)
                     train_labels.extend(class_labels)
@@ -659,16 +743,16 @@ def test_page():
         show_reference_chart()
 
     # Mode selection with toggle buttons
-    mode_col1, mode_col2 = st.columns(2)
+    col1, col2 = st.columns(2)
     
-    with mode_col1:
+    with col1:
         st.markdown(get_button_style(st.session_state.get('mode') == 'camera'), unsafe_allow_html=True)
         if st.button("📷 Camera Mode", key="camera_mode"):
             st.session_state.mode = 'camera'
             cleanup()
             st.rerun()
     
-    with mode_col2:
+    with col2:
         st.markdown(get_button_style(st.session_state.get('mode') == 'upload'), unsafe_allow_html=True)
         if st.button("📤 Upload Mode", key="upload_mode"):
             st.session_state.mode = 'upload'
@@ -679,35 +763,104 @@ def test_page():
 
     # Camera Mode
     if st.session_state.get('mode') == 'camera':
-        # Create two columns for camera controls
+        # Camera controls
         control_col1, control_col2 = st.columns(2)
         
         with control_col1:
             if not st.session_state.get('camera_active', False):
-                if st.button("📷 Start Camera", key="start_camera"):
+                if st.button('Start Camera'):
                     if IS_HUGGINGFACE:
                         st.session_state['camera_active'] = True
-                        st.success("Camera initialized. Please allow camera access when prompted.")
+                        st.success("Camera initialized successfully!")
                     else:
-                        # Local environment - use OpenCV
                         if 'cap' in st.session_state and st.session_state.cap is not None:
                             st.session_state.cap.release()
                         
-                        st.session_state.cap = initialize_camera()
-                        if st.session_state.cap is not None:
+                        st.session_state.cap = cv2.VideoCapture(0)
+                        if st.session_state.cap.isOpened():
+                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                            st.session_state.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                            st.session_state.cap.set(cv2.CAP_PROP_FPS, 30)
                             st.session_state['camera_active'] = True
                             st.success("Camera initialized successfully!")
+                        else:
+                            st.error("Could not initialize camera. Please check permissions and try again.")
+
+        with control_col2:
+            if st.session_state.get('camera_active', False):
+                if st.button("⏹️ Stop Camera", key="stop_camera"):
+                    cleanup()
                     st.rerun()
 
-    with control_col2:
+        # Run camera feed if active
         if st.session_state.get('camera_active', False):
-            if st.button("⏹️ Stop Camera", key="stop_camera"):
-                cleanup()
-                st.rerun()
+            run_camera_feed()
 
-    # Run camera feed if active
-    if st.session_state.get('camera_active', False):
-        run_camera_feed()
+    # Upload Mode
+    else:
+        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+        if uploaded_file is not None:
+            try:
+                # Load and process image
+                image = Image.open(uploaded_file)
+                image_np = np.array(image)
+                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+                
+                # Create a hand tracker specifically for static images
+                image_hand_tracker = mp_hands.Hands(
+                    static_image_mode=True,
+                    max_num_hands=1,
+                    min_detection_confidence=0.2,  # Lower threshold for images
+                    model_complexity=1
+                )
+                
+                # Process with MediaPipe
+                results = image_hand_tracker.process(image_rgb)
+                
+                if results.multi_hand_landmarks:
+                    # Create a copy for drawing
+                    image_with_landmarks = image_rgb.copy()
+                    
+                    for hand_landmarks in results.multi_hand_landmarks:
+                        # Draw landmarks
+                        mp_drawing.draw_landmarks(
+                            image_with_landmarks,
+                            hand_landmarks,
+                            mp_hands.HAND_CONNECTIONS,
+                            mp_drawing_styles.get_default_hand_landmarks_style(),
+                            mp_drawing_styles.get_default_hand_connections_style()
+                        )
+                        
+                        # Extract landmarks and predict
+                        landmarks = np.array([[l.x, l.y, l.z] for l in hand_landmarks.landmark]).flatten()
+                        prediction = st.session_state.model.predict(np.expand_dims(landmarks, 0), verbose=0)
+                        predicted_class = IDX_TO_CLASS[np.argmax(prediction[0])]
+                        confidence = np.max(prediction[0])
+
+                        # Show both original and processed images
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.image(image_rgb, caption="Original Image", use_column_width=True)
+                        with col2:
+                            st.image(image_with_landmarks, caption="Detected Hand Landmarks", use_column_width=True)
+                        with col3:
+                            st.markdown(f"""
+                                <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px;'>
+                                    <h2 style='color: #00acee;'>Prediction Results</h2>
+                                    <p style='font-size: 24px;'>Sign: {predicted_class}</p>
+                                    <p style='font-size: 18px;'>Confidence: {confidence:.2%}</p>
+                                </div>
+                            """, unsafe_allow_html=True)
+                else:
+                    st.image(image_rgb, caption="Original Image", use_column_width=True)
+                    st.error("No hand detected in the image. Please ensure the hand is clearly visible.")
+                
+                # Clean up the image hand tracker
+                image_hand_tracker.close()
+            
+            except Exception as e:
+                st.error(f"Error processing image: {str(e)}")
+                st.write("Error details:", str(e))
 
 if __name__ == "__main__":
     try:
