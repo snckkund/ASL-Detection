@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ASL Recognition</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="static/app.js"></script>
+    <script src="static/config.js"></script>
+    <link rel="stylesheet" type="text/css" href="static/styles.css">
+</head>
+<body>
+    <h1>ASL Recognition</h1>
+    <div class="mode-toggle" style="margin-bottom: 15px;">
+        <button id="liveMode" class="mode-btn active">Live Detection</button>
+        <button id="uploadMode" class="mode-btn">Image Upload</button>
+    </div>
+    <div id="liveSection">
+        <video id="video" autoplay playsinline style="width: 100%; max-width: 640px; display: none;"></video>
+        <canvas id="canvas" style="width: 100%; max-width: 640px; border: 1px solid #ddd;"></canvas>
+        <div style="margin: 10px 0;">
+            <select id="cameraSelect" style="margin-right: 10px;"></select>
+            <button id="startButton">Start Camera</button>
+            <button id="stopButton" style="display: none;">Stop Camera</button>
+        </div>
+    </div>
+    <div id="uploadSection" style="display: none;">
+        <input type="file" id="imageUpload" accept="image/*" style="margin-bottom: 10px;">
+        <canvas id="uploadCanvas" style="width: 100%; max-width: 640px; border: 1px solid #ddd;"></canvas>
+        <button id="predictButton" style="margin-top: 10px;" disabled>Predict Sign</button>
+    </div>
+    <p id="status" style="color: red;">Loading MediaPipe... Please wait.</p>
+    <p id="prediction" style="font-size: 18px; color: #e74c3c;"></p>
+</body>
+</html>

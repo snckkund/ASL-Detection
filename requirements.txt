@@ -1,0 +1,7 @@
+# Dependencies
+uvicorn
+numpy
+fastapi
+pydantic
+tensorflow
+python-dotenv

@@ -1,0 +1,5 @@
+.env
+/.asl
+/dataset
+/backend/__pycache__
+/training/__pycache__

@@ -1,0 +1,65 @@
+name: Sync to Hugging Face Hub
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-to-hf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # Configure Git LFS
+          git lfs install
+          git lfs track "*.h5"
+          
+          # Force track existing .h5 files
+          find . -name "*.h5" -type f -exec git add {} \;
+          
+          # Create/update .gitattributes for LFS
+          echo "*.h5 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
+          
+          # Stage and commit changes
+          git add .gitattributes
+          git add "*.h5"
+          git commit -m "Update .gitattributes and track h5 files with LFS" || echo "No changes to commit"
+          
+          # Convert existing .h5 files to LFS
+          git lfs migrate import --include="*.h5" --everything
+          
+          # Add Hugging Face remote
+          git remote add space https://chandrakant06:$HF_TOKEN@huggingface.co/spaces/chandrakant06/ASL-Vision
+          
+          # Fetch from Hugging Face
+          git fetch space main
+          
+          # Create a temporary branch
+          git checkout -b temp_branch
+          
+          # Copy README and .gitattributes from HF
+          git checkout space/main -- README.md || true
+          git checkout space/main -- .gitattributes || true
+          
+          # Stage and commit
+          git add README.md .gitattributes || true
+          git commit -m "Preserve HF README and .gitattributes" || true
+          
+          # Push LFS objects first
+          git lfs push --all space
+          
+          # Push to Hugging Face
+          git push -f space temp_branch:main
+          
+          # Cleanup
+          git checkout main
+          git branch -D temp_branch 

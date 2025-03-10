@@ -1,0 +1,148 @@
+body {
+    font-family: 'Arial', sans-serif;
+    background-color: #f0f0f0;
+    margin: 0;
+    padding: 20px;
+    text-align: center;
+}
+
+h1 {
+    color: #2c3e50;
+    margin-bottom: 20px;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Mode Toggle Styles */
+.mode-toggle {
+    margin-bottom: 20px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+.mode-btn {
+    padding: 8px 16px;
+    font-size: 14px;
+    border: 2px solid #3498db;
+    background-color: white;
+    color: #3498db;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.mode-btn:hover {
+    background-color: #e8f4fc;
+}
+
+.mode-btn.active {
+    background-color: #3498db;
+    color: white;
+}
+
+/* Upload Section Styles */
+#uploadSection {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+}
+
+#imageUpload {
+    max-width: 300px;
+    margin: 10px 0;
+}
+
+#predictButton {
+    padding: 8px 16px;
+    font-size: 14px;
+    background-color: #2ecc71;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+#predictButton:hover {
+    background-color: #27ae60;
+}
+
+#predictButton:disabled {
+    background-color: #bdc3c7;
+    cursor: not-allowed;
+}
+
+#cameraSelect {
+    margin: 10px 0;
+    padding: 5px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    background-color: #fff;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    width: 60%;
+    max-width: 400px;
+}
+
+video {
+    border: 2px solid #3498db;
+    border-radius: 10px;
+    width: 80%;
+    max-width: 600px;
+    height: auto;
+    margin: 20px 0;
+}
+
+canvas {
+    border: 2px solid #3498db;
+    border-radius: 10px;
+    width: 80%;
+    max-width: 600px;
+    height: auto;
+    margin-bottom: 20px;
+}
+
+#prediction {
+    margin-top: 20px;
+    font-size: 18px;
+    color: #e74c3c;
+    font-weight: bold;
+    background-color: #ecf0f1;
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* Button Styles */
+#startButton, #stopButton {
+    padding: 8px 16px;
+    font-size: 14px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+#startButton {
+    background-color: #2ecc71;
+    color: white;
+}
+
+#startButton:hover {
+    background-color: #27ae60;
+}
+
+#stopButton {
+    background-color: #e74c3c;
+    color: white;
+}
+
+#stopButton:hover {
+    background-color: #c0392b;
+}
