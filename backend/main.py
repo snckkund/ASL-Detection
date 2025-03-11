@@ -9,7 +9,7 @@ import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, validator
 
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY", "your-secret-api-key")
