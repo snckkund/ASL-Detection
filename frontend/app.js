@@ -1,11 +1,17 @@
 document.addEventListener('DOMContentLoaded', function() {
     let video = document.getElementById("video");
     let canvas = document.getElementById("canvas");
+    let uploadCanvas = document.getElementById("uploadCanvas");
     let ctx = canvas.getContext("2d");
+    let uploadCtx = uploadCanvas.getContext("2d");
     let cameraSelect = document.getElementById("cameraSelect");
     let startButton = document.getElementById("startButton");
     let stopButton = document.getElementById("stopButton");
     let statusText = document.getElementById("status");
+    let liveMode = document.getElementById("liveMode");
+    let uploadMode = document.getElementById("uploadMode");
+    let imageUpload = document.getElementById("imageUpload");
+    let predictButton = document.getElementById("predictButton");
     let cameraStream = null;
     let hands = null;
     let isModelLoaded = false;
@@ -14,6 +20,117 @@ document.addEventListener('DOMContentLoaded', function() {
     let lastProcessedTime = 0;
     let processingFrame = false;
 
+    // Load from config
+    const JS_KEY = window.JS_KEY;
+    const ASL_API_URL = window.ASL_API_URL;
+
+    // Set dimensions for both canvases
+    const CANVAS_WIDTH = 640;
+    const CANVAS_HEIGHT = 480;
+    canvas.width = CANVAS_WIDTH;
+    canvas.height = CANVAS_HEIGHT;
+    uploadCanvas.width = CANVAS_WIDTH;
+    uploadCanvas.height = CANVAS_HEIGHT;
+
+    // Mode toggle handlers
+    liveMode.addEventListener('click', () => {
+        liveMode.classList.add('active');
+        uploadMode.classList.remove('active');
+        document.getElementById('liveSection').style.display = 'block';
+        document.getElementById('uploadSection').style.display = 'none';
+        if (lastResults) {
+            lastResults = null;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+    });
+
+    uploadMode.addEventListener('click', () => {
+        uploadMode.classList.add('active');
+        liveMode.classList.remove('active');
+        document.getElementById('uploadSection').style.display = 'block';
+        document.getElementById('liveSection').style.display = 'none';
+        stopCamera();
+    });
+
+    // Image upload handler
+    imageUpload.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    // Clear previous results
+                    lastResults = null;
+                    
+                    // Calculate scaling to maintain aspect ratio
+                    const scale = Math.min(
+                        CANVAS_WIDTH / img.width,
+                        CANVAS_HEIGHT / img.height
+                    );
+                    const width = img.width * scale;
+                    const height = img.height * scale;
+                    const x = (CANVAS_WIDTH - width) / 2;
+                    const y = (CANVAS_HEIGHT - height) / 2;
+
+                    // Clear canvas and draw image
+                    uploadCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    uploadCtx.drawImage(img, x, y, width, height);
+                    predictButton.disabled = false;
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+
+    // Predict button handler (updated)
+    predictButton.addEventListener('click', async () => {
+        if (!isModelLoaded || !hands) {
+            statusText.textContent = "Please wait for MediaPipe to load...";
+            return;
+        }
+    
+        predictButton.disabled = true;
+        statusText.textContent = "Processing image...";
+    
+        try {
+            const results = await hands.send({ image: uploadCanvas });
+    
+            // Add proper null checks
+            if (results?.multiHandLandmarks?.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const prediction = await getPrediction(landmarks);
+                
+                // Clear previous drawings
+                uploadCtx.clearRect(0, 0, uploadCanvas.width, uploadCanvas.height);
+                
+                // Redraw original image
+                const img = new Image();
+                img.src = uploadCanvas.toDataURL();
+                await new Promise(resolve => img.onload = resolve);
+                uploadCtx.drawImage(img, 0, 0);
+                
+                // Draw new landmarks
+                drawHandLandmarks(uploadCtx, landmarks);
+                
+                if (prediction?.prediction_class) {
+                    drawBoundingBox(uploadCtx, landmarks, prediction.prediction_class);
+                    statusText.textContent = `Prediction: ${prediction.prediction_class}`;
+                } else {
+                    statusText.textContent = "Prediction failed";
+                }
+            } else {
+                statusText.textContent = "No hand detected in the image.";
+            }
+        } catch (error) {
+            console.error("Error processing image:", error);
+            statusText.textContent = "Error processing image. Please try again.";
+        } finally {
+            predictButton.disabled = false;
+        }
+    });
+
     // Immediately hide the video element when the page loads
     video.style.display = "none";
     video.style.position = "absolute";
@@ -21,12 +138,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Processing frequency (ms) - only process frames at this interval
     const PROCESSING_INTERVAL = 100; // 10 fps for hand detection
-
-    // Set fixed dimensions for processing
-    const CANVAS_WIDTH = 640;
-    const CANVAS_HEIGHT = 480;
-    canvas.width = CANVAS_WIDTH;
-    canvas.height = CANVAS_HEIGHT;
 
     // Define colors for each finger and palm
     const landmarkColors = {
@@ -131,8 +242,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // Draw the connection
             ctx.beginPath();
-            ctx.moveTo(startPoint.x * canvas.width, startPoint.y * canvas.height);
-            ctx.lineTo(endPoint.x * canvas.width, endPoint.y * canvas.height);
+            ctx.moveTo(startPoint.x * ctx.canvas.width, startPoint.y * ctx.canvas.height);
+            ctx.lineTo(endPoint.x * ctx.canvas.width, endPoint.y * ctx.canvas.height);
             ctx.strokeStyle = color;
             ctx.lineWidth = 2; // Connection thickness set to 2
             ctx.stroke();
@@ -330,14 +441,24 @@ document.addEventListener('DOMContentLoaded', function() {
                         // Store results with prediction for rendering
                         lastResults = { ...results, prediction };
                         
-                        statusText.innerText = "Hand detected";
+                        // Different status messages for live and upload modes
+                        const isLiveMode = document.getElementById('liveMode').classList.contains('active');
+                        if (isLiveMode) {
+                            statusText.innerText = "Hand detected";
+                        } else {
+                            if (prediction && prediction.prediction_class) {
+                                statusText.innerText = `Detected: ${prediction.prediction_class} (${(prediction.confidence * 100).toFixed(1)}%)`;
+                            } else {
+                                statusText.innerText = "Processing...";
+                            }
+                        }
 
                     } catch (error) {
                         console.error("Error processing hand data:", error);
                         statusText.innerText = "Processing error: " + error.message;
                     }
                 } else {
-                    // If no hands are detected, clear the last results to remove the visualization
+                    // If no hands are detected, clear the last results
                     if (lastResults && lastResults.multiHandLandmarks && lastResults.multiHandLandmarks.length > 0) {
                         lastResults = { multiHandLandmarks: [] };
                         statusText.innerText = "No hands detected";
@@ -357,8 +478,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Function to draw a bounding box around the hand and display the prediction
     function drawBoundingBox(ctx, landmarks, prediction) {
-        const xCoords = landmarks.map(l => l.x * canvas.width);
-        const yCoords = landmarks.map(l => l.y * canvas.height);
+        const xCoords = landmarks.map(l => l.x * ctx.canvas.width);
+        const yCoords = landmarks.map(l => l.y * ctx.canvas.height);
         
         const minX = Math.min(...xCoords);
         const minY = Math.min(...yCoords);
@@ -396,6 +517,29 @@ document.addEventListener('DOMContentLoaded', function() {
         ctx.fillText(text, textX, textY);
     }
 
+    // Function to draw hand landmarks
+    function drawHandLandmarks(context, landmarks) {
+        // Draw connections
+        drawCustomConnections(context, landmarks, customConnections);
+        
+        // Draw landmark points
+        for (let i = 0; i < landmarks.length; i++) {
+            const landmark = landmarks[i];
+            const color = landmarkColors[i] || '#FFFFFF';
+            
+            context.beginPath();
+            context.arc(
+                landmark.x * context.canvas.width,
+                landmark.y * context.canvas.height,
+                5,
+                0,
+                2 * Math.PI
+            );
+            context.fillStyle = color;
+            context.fill();
+        }
+    }
+
     // Function to get the prediction from the API with debouncing
     const getPrediction = (function() {
         let lastRequestTime = 0;
@@ -427,11 +571,11 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const response = await fetch(ASL_API_URL, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-API-KEY': JS_KEY
+                    headers: { 
+                        "Content-Type": "application/json", 
+                        "X-API-KEY": JS_KEY
                     },
-                    body: JSON.stringify({ landmarks: landmarkArray }),
+                    body: JSON.stringify({ "landmarks": landmarkArray }),
                 });
         
                 if (!response.ok) {

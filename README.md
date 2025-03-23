@@ -6,7 +6,7 @@ ASL Vision is a real-time American Sign Language recognition system that uses co
 
 - Real-time ASL sign recognition using webcam
 - Support for image upload and recognition
-- Interactive web interface built with Streamlit
+- Interactive web interface
 - Dataset visualization and statistics
 - Model training capabilities
 - Reference chart for ASL signs
@@ -15,10 +15,10 @@ ASL Vision is a real-time American Sign Language recognition system that uses co
 
 - Python 3.12+
 - Required packages listed in `requirements.txt`:
+  - fastapi
   - mediapipe >= 0.10.21
   - numpy >= 1.26.4
   - opencv-python >= 4.11.0.86
-  - streamlit >= 1.42.1
   - tensorflow >= 2.18.0
   - tqdm >= 4.66.1
 
